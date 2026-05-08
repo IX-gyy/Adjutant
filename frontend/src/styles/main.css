@@ -1,0 +1,11 @@
+/* 统一引入所有样式 */
+@import './variables.css';
+@import './global.css';
+/* 组件样式（若保留组件scoped，可注释此部分） */
+@import './components/ChatWindow.css';
+@import './components/StatusBar.css';
+@import './components/InputArea.css';
+@import './components/MessageList.css';
+@import './components/MessageItem.css';
+@import './components/LoadingMask.css';
+@import './components/VoiceButton.css';

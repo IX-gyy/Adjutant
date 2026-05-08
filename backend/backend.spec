@@ -1,0 +1,139 @@
+# -*- mode: python ; coding: utf-8 -*-
+
+import os
+import sys
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+# ────────────────── 动态获取关键库路径（原有逻辑）──────────────────
+# 获取 llama_cpp 库路径
+try:
+    import llama_cpp
+    LLAMA_CPP_PATH = os.path.dirname(llama_cpp.__file__)
+except ImportError:
+    print("错误：未找到 llama_cpp 库，请先安装依赖", file=sys.stderr)
+    sys.exit(1)
+
+# 获取 vosk 库路径（自动适配当前 conda/venv 环境）
+try:
+    import vosk
+    VOSK_LIB_PATH = os.path.dirname(vosk.__file__)
+except ImportError:
+    print("错误：未找到 vosk 库，请先安装依赖", file=sys.stderr)
+    sys.exit(1)
+
+# 当前 spec 文件所在目录（通常就是 backend 目录）
+spec_dir = os.path.dirname(os.path.abspath(SPEC))
+block_cipher = None
+
+# ────────────────── 1. 原有数据文件打包 (vosk + llama_cpp + models) ──────────────────
+# 需要内置数据文件的第三方包（新增 TTS 相关）
+packages_with_data = [
+    'kokoro_onnx',
+    'misaki',
+    'language_tags',
+    'csvw',
+    'segments',
+    'espeakng_loader',       # eSpeak NG 二进制加载器
+]
+
+all_datas = []
+
+# 添加用户自己的模型文件夹
+all_datas.append((os.path.join(spec_dir, 'models'), 'models'))
+
+# 收集以上第三方包的数据文件（如配置、预置模型等）
+for pkg in packages_with_data:
+    try:
+        all_datas.extend(collect_data_files(pkg))
+    except Exception:
+        pass
+
+# 原有 vosk 完整库打包
+all_datas.append((VOSK_LIB_PATH, 'vosk'))
+
+# 原有 llama_cpp 的 lib 目录打包（含 .dll / .so）
+all_datas.append((os.path.join(LLAMA_CPP_PATH, 'lib'), 'llama_cpp/lib'))
+
+# ────────────────── 2. 二进制文件打包（动态库）──────────────────
+binaries = [
+    # llama_cpp 的 dll 文件（Windows）
+    (os.path.join(LLAMA_CPP_PATH, 'lib', '*.dll'), 'llama_cpp/lib'),
+    # vosk 的 dll 文件（Windows）
+    (os.path.join(VOSK_LIB_PATH, '*.dll'), 'vosk'),
+]
+
+# ────────────────── 3. 隐藏导入（全量覆盖）──────────────────
+hiddenimports = [
+    # Vosk 相关
+    'vosk',
+    'sounddevice',
+    'pypinyin',
+
+    # Llama.cpp 相关
+    'llama_cpp',
+    'llama_cpp.llama',
+    'llama_cpp._ctypes_extensions',
+
+    # NumPy 通用
+    'numpy',
+    'numpy.core._multiarray_umath',
+
+    # TTS 新增相关
+    'misaki',
+    'kokoro_onnx',
+    'language_tags',
+    'csvw',
+    'segments',
+    'espeakng_loader',
+    'json',
+    'email.mime.text',
+    'email.mime.multipart',
+]
+
+# ────────────────── 4. PyInstaller 分析配置 ──────────────────
+a = Analysis(
+    ['backend.py'],
+    pathex=[spec_dir],
+    binaries=binaries,
+    datas=all_datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='backend',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=True,          # 开发阶段保留控制台；正式交付可改为 False
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='backend',
+)

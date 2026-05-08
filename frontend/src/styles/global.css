@@ -1,0 +1,59 @@
+/* 基础重置 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-family);
+  color: var(--text-primary);
+  background-color: var(--bg-white);
+}
+
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+/* 全局动画 */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.2); }
+}
+@keyframes recording-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 77, 79, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(255, 77, 79, 0); }
+}
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+@keyframes dots {
+  0%, 20% { content: '.'; }
+  40% { content: '..'; }
+  60%, 100% { content: '...'; }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 全局滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-base);
+  border-radius: var(--radius-sm);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
