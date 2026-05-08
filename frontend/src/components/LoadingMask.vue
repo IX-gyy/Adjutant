@@ -38,13 +38,14 @@ function handleCancel() {
 </script>
 
 <style scoped>
+/* 主题修改：LoadingMask 深空黑背景 */
 .loading-mask {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--terran-bg-overlay);
   backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
@@ -66,9 +67,10 @@ function handleCancel() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: var(--terran-spacing-lg);
 }
 
+/* 主题修改：军工风格旋转指示灯 */
 .loading-spinner {
   position: relative;
   width: 60px;
@@ -80,13 +82,15 @@ function handleCancel() {
   width: 100%;
   height: 100%;
   border: 3px solid transparent;
-  border-top-color: #1890ff;
-  border-radius: 50%;
+  border-top-color: var(--terran-primary);
+  border-radius: var(--terran-radius-circle);
   animation: spin 1s linear infinite;
 }
 
 .spinner-ring:nth-child(1) {
   animation-duration: 1s;
+  border-top-color: var(--terran-primary);
+  box-shadow: 0 0 8px var(--terran-primary-glow);
 }
 
 .spinner-ring:nth-child(2) {
@@ -94,9 +98,10 @@ function handleCancel() {
   height: 80%;
   top: 10%;
   left: 10%;
-  border-top-color: #52c41a;
+  border-top-color: var(--terran-info);
   animation-duration: 0.8s;
   animation-direction: reverse;
+  box-shadow: 0 0 6px var(--terran-info-glow);
 }
 
 .spinner-ring:nth-child(3) {
@@ -104,8 +109,9 @@ function handleCancel() {
   height: 60%;
   top: 20%;
   left: 20%;
-  border-top-color: #faad14;
+  border-top-color: var(--terran-danger);
   animation-duration: 0.6s;
+  box-shadow: 0 0 4px var(--terran-danger-glow);
 }
 
 @keyframes spin {
@@ -117,29 +123,37 @@ function handleCancel() {
   }
 }
 
+/* 主题修改：加载文字使用科幻字体 */
 .loading-text {
-  font-size: 14px;
-  color: #595959;
+  font-family: var(--terran-font-display);
+  font-size: var(--terran-font-size-md);
+  color: var(--terran-text-secondary);
   text-align: center;
+  letter-spacing: 1px;
 }
 
 .loading-actions {
-  margin-top: 8px;
+  margin-top: var(--terran-spacing-sm);
 }
 
+/* 主题修改：取消按钮使用帝国暗红色 */
 .cancel-btn {
-  padding: 8px 20px;
-  border: 1px solid #ff4d4f;
+  padding: var(--terran-spacing-sm) var(--terran-spacing-xl);
+  border: 1px solid var(--terran-danger);
   background: transparent;
-  color: #ff4d4f;
+  color: var(--terran-danger);
   border-radius: 20px;
-  font-size: 13px;
+  font-family: var(--terran-font-mono);
+  font-size: var(--terran-font-size-sm);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all var(--terran-transition-base);
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
 
 .cancel-btn:hover {
-  background: #ff4d4f;
+  background: var(--terran-danger);
   color: #fff;
+  box-shadow: var(--terran-glow-danger);
 }
 </style>

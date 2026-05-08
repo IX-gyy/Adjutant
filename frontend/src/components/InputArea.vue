@@ -201,43 +201,49 @@ function formatDuration(seconds: number): string {
 </script>
 
 <style scoped>
+/* 主题修改：InputArea 深灰黑背景 */
 .input-area {
-  padding: 12px 16px;
-  border-top: 1px solid #f0f0f0;
-  background: #fff;
+  padding: var(--terran-spacing-md) var(--terran-spacing-lg);
+  border-top: 1px solid var(--terran-border-primary);
+  background: var(--terran-bg-secondary);
 }
 
 /* 状态栏 - 固定在输入框上方 */
 .status-bar {
   height: 28px;
-  margin-bottom: 8px;
+  margin-bottom: var(--terran-spacing-sm);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+/* 主题修改：状态项使用CSS变量 */
 .status-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
+  gap: var(--terran-spacing-sm);
+  font-family: var(--terran-font-mono);
+  font-size: var(--terran-font-size-sm);
   animation: fadeIn 0.2s ease;
 }
 
+/* 主题修改：录音状态使用帝国暗红 */
 .status-item.recording {
-  color: #ff4d4f;
+  color: var(--terran-danger);
+  text-shadow: var(--terran-text-glow-danger);
 }
 
 .status-item.transcribing {
-  color: #1890ff;
+  color: var(--terran-info);
 }
 
 .status-item.generating {
-  color: #52c41a;
+  color: var(--terran-primary);
+  text-shadow: var(--terran-text-glow-primary);
 }
 
 .status-item.tts-playing {
-  color: #1890ff;
+  color: var(--terran-info);
 }
 
 .generating-dots,
@@ -253,19 +259,22 @@ function formatDuration(seconds: number): string {
   60%, 100% { content: '...'; }
 }
 
+/* 主题修改：取消按钮样式 */
 .cancel-btn {
-  margin-left: 8px;
-  font-size: 12px;
-  padding: 0 4px;
+  margin-left: var(--terran-spacing-sm);
+  font-size: var(--terran-font-size-xs);
+  padding: 0 var(--terran-spacing-xs);
   height: 22px;
 }
 
+/* 主题修改：录音指示点使用暗红色 */
 .recording-dot {
   width: 8px;
   height: 8px;
-  background: #ff4d4f;
-  border-radius: 50%;
+  background: var(--terran-danger);
+  border-radius: var(--terran-radius-circle);
   animation: pulse 1s infinite;
+  box-shadow: var(--terran-glow-danger);
 }
 
 @keyframes pulse {
@@ -291,7 +300,7 @@ function formatDuration(seconds: number): string {
 /* 过渡动画 */
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity var(--terran-transition-base);
 }
 
 .fade-enter-from,
@@ -299,29 +308,39 @@ function formatDuration(seconds: number): string {
   opacity: 0;
 }
 
-/* 输入框区域 */
+/* 主题修改：输入框区域深灰黑背景 */
 .input-wrapper {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  background: #f5f5f5;
+  gap: var(--terran-spacing-sm);
+  background: var(--terran-input-bg);
+  border: var(--terran-input-border);
   border-radius: 24px;
-  padding: 8px 12px;
-  transition: all 0.3s ease;
+  padding: var(--terran-spacing-sm) var(--terran-spacing-md);
+  transition: all var(--terran-transition-slow);
+}
+
+/* 主题修改：输入框聚焦带主色发光边框 */
+.input-wrapper:focus-within {
+  border: var(--terran-input-focus-border);
+  box-shadow: var(--terran-input-focus-glow);
 }
 
 .input-wrapper.is-generating {
-  background: #f6ffed;
-  border: 1px solid #b7eb8f;
+  background: var(--terran-bg-secondary);
+  border: 1px solid var(--terran-primary);
+  box-shadow: var(--terran-glow-primary);
 }
 
+/* 主题修改：输入框样式 */
 .input-textarea {
   flex: 1;
   border: none;
   outline: none;
   background: transparent;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: var(--terran-font-size-md);
+  line-height: var(--terran-line-height-normal);
+  color: var(--terran-text-primary);
   resize: none;
   min-height: 20px;
   max-height: 120px;
@@ -330,7 +349,7 @@ function formatDuration(seconds: number): string {
 }
 
 .input-textarea::placeholder {
-  color: #bfbfbf;
+  color: var(--terran-text-tertiary);
 }
 
 .input-textarea:disabled {
@@ -341,10 +360,10 @@ function formatDuration(seconds: number): string {
 .input-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--terran-spacing-sm);
 }
 
-/* 语音按钮 */
+/* 主题修改：语音按钮录音状态为暗红+脉冲动画 */
 .voice-btn {
   width: 36px;
   height: 36px;
@@ -354,33 +373,48 @@ function formatDuration(seconds: number): string {
 }
 
 .voice-btn.is-recording {
-  background: #ff4d4f;
+  background: var(--terran-danger);
   color: #fff;
-  border-color: #ff4d4f;
-  animation: recording-pulse 1s infinite;
+  border-color: var(--terran-danger);
+  animation: recordingPulse 1s infinite;
 }
 
 .voice-btn.is-recording:hover {
-  background: #ff7875;
-  border-color: #ff7875;
+  background: var(--terran-danger-light);
+  border-color: var(--terran-danger-light);
   color: #fff;
 }
 
-@keyframes recording-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(255, 77, 79, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(255, 79, 79, 0);
-  }
-}
-
-/* 发送按钮 */
+/* 主题修改：发送按钮主色+hover发光 */
 .send-btn {
   width: 36px;
   height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.send-btn:not(:disabled):hover {
+  box-shadow: var(--terran-glow-primary);
+}
+
+/* 主题修改：Ant Design 按钮深度样式覆盖 */
+:deep(.ant-btn) {
+  border-radius: var(--terran-radius-circle) !important;
+}
+
+:deep(.ant-btn-primary) {
+  background: var(--terran-btn-primary-bg) !important;
+  border-color: var(--terran-btn-primary-bg) !important;
+}
+
+:deep(.ant-btn-primary:not(:disabled):hover) {
+  background: var(--terran-btn-primary-hover) !important;
+  border-color: var(--terran-btn-primary-hover) !important;
+  box-shadow: var(--terran-glow-primary);
+}
+
+:deep(.ant-btn-dangerous) {
+  color: var(--terran-danger) !important;
 }
 </style>

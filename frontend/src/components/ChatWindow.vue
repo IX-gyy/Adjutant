@@ -72,23 +72,25 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 主题修改：ChatWindow 主窗口深空黑渐变背景 */
 .chat-window {
   position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #fff;
-  border-radius: 8px;
+  background: var(--terran-chat-bg);
+  border-radius: var(--terran-radius-lg);
   overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--terran-shadow-elevated);
+  border: 1px solid var(--terran-border-primary);
 }
 
-/* 🆕 加载遮罩样式 */
+/* 主题修改：加载遮罩改为半透明深色背景 */
 .loading-overlay {
   position: absolute;
   inset: 0;
   z-index: 1000;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--terran-bg-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -97,21 +99,51 @@ onMounted(() => {
 
 .loading-content {
   text-align: center;
-  color: #555;
+  color: var(--terran-text-primary);
 }
 
+/* 主题修改：加载文字使用科幻字体 */
 .loading-text {
-  margin-top: 16px;
-  font-size: 16px;
-  letter-spacing: 1px;
+  margin-top: var(--terran-spacing-lg);
+  font-family: var(--terran-font-display);
+  font-size: var(--terran-font-size-lg);
+  letter-spacing: 2px;
+  color: var(--terran-primary);
+  text-shadow: var(--terran-text-glow-primary);
 }
 
+/* 主题修改：聊天区域带军工纹理渐变 */
 .chat-body {
   flex: 1;
   display: flex;
   flex-direction: column;
   position: relative;
   overflow: hidden;
-  background: linear-gradient(180deg, #fafafa 0%, #f5f5f5 100%);
+  background: var(--terran-chat-body-bg);
+}
+
+/* 主题修改：添加军工纹理效果 */
+.chat-body::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(90deg, transparent 98%, rgba(82, 196, 26, 0.03) 98%),
+    linear-gradient(0deg, transparent 98%, rgba(82, 196, 26, 0.03) 98%);
+  background-size: 50px 50px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* 主题修改：Ant Design Spin 在遮罩中的样式覆盖 */
+:deep(.ant-spin-text) {
+  color: var(--terran-primary) !important;
+  font-family: var(--terran-font-display);
+  text-shadow: var(--terran-text-glow-primary);
+}
+
+:deep(.ant-spin-dot-item) {
+  background: var(--terran-primary) !important;
+  box-shadow: var(--terran-glow-primary);
 }
 </style>

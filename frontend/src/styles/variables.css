@@ -1,61 +1,169 @@
-/* 主题变量 - 颜色系统 */
+/* ============================================
+   泰伦帝国军工科幻主题 - CSS变量体系
+   Terran Empire Military Sci-Fi Theme
+   ============================================ */
+
 :root {
-  /* 主色调 */
-  --primary-color: #52c41a;
-  --primary-light: #b7eb8f;
-  --primary-dark: #389e0d;
-  --secondary-color: #1890ff;
-  --secondary-light: #69b1ff;
-  --secondary-dark: #096dd9;
-  --danger-color: #ff4d4f;
-  --danger-light: #ff7875;
-  --warning-color: #faad14;
+  /* ========================================
+     颜色系统 - Color System
+     ======================================== */
 
-  /* 中性色 */
-  --text-primary: #262626;
-  --text-secondary: #8c8c8c;
-  --text-placeholder: #bfbfbf;
-  --bg-white: #ffffff;
-  --bg-light: #f5f5f5;
-  --bg-hover: #e6f7ff;
-  --border-light: #f0f0f0;
-  --border-base: #d9d9d9;
+  /* 主色：泰伦帝国军绿色 */
+  --terran-primary: #52c41a;
+  --terran-primary-light: #73d13d;
+  --terran-primary-dark: #389e0d;
+  --terran-primary-glow: rgba(82, 196, 26, 0.6);
+  --terran-primary-glow-strong: rgba(82, 196, 26, 0.8);
 
-  /* 字体系统 */
-  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-size-xs: 11px;
-  --font-size-sm: 12px;
-  --font-size-md: 14px;
-  --font-size-lg: 16px;
-  --font-size-xl: 18px;
-  --font-weight-medium: 500;
-  --font-weight-bold: 600;
+  /* 辅助色：帝国暗红（危险/录音状态） */
+  --terran-danger: #e63946;
+  --terran-danger-light: #ff4d4f;
+  --terran-danger-dark: #c41d23;
+  --terran-danger-glow: rgba(230, 57, 70, 0.6);
 
-  /* 间距系统 */
-  --spacing-xs: 4px;
-  --spacing-sm: 8px;
-  --spacing-md: 12px;
-  --spacing-lg: 16px;
-  --spacing-xl: 20px;
+  /* 辅助色：深空蓝（用户消息/信息状态） */
+  --terran-info: #1890ff;
+  --terran-info-light: #40a9ff;
+  --terran-info-dark: #096dd9;
+  --terran-info-glow: rgba(24, 144, 255, 0.6);
 
-  /* 圆角/阴影/过渡 */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-circle: 50%;
-  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.15);
-  --transition-base: all 0.2s ease;
-  --transition-slow: all 0.3s ease;
-}
+  /* 警告色：帝国橙 */
+  --terran-warning: #faad14;
+  --terran-warning-glow: rgba(250, 173, 20, 0.6);
 
-/* 暗黑模式适配（可选） */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --primary-color: #73d13d;
-    --text-primary: #f3f4f6;
-    --text-secondary: #9ca3af;
-    --bg-white: #16171d;
-    --bg-light: #1f2028;
-    --border-light: #2e303a;
-  }
+  /* 背景色：深空黑系列 */
+  --terran-bg-primary: #0a0a0f;
+  --terran-bg-secondary: #12121a;
+  --terran-bg-tertiary: #1a1a25;
+  --terran-bg-quaternary: #252535;
+  --terran-bg-overlay: rgba(10, 10, 15, 0.9);
+
+  /* 文字色 */
+  --terran-text-primary: #e0e0e0;
+  --terran-text-secondary: #999999;
+  --terran-text-tertiary: #666666;
+  --terran-text-muted: #444455;
+
+  /* 边框色 */
+  --terran-border-primary: #2a2a3a;
+  --terran-border-secondary: #3a3a4a;
+  --terran-border-glow: rgba(82, 196, 26, 0.3);
+
+  /* 状态指示色 */
+  --terran-status-active: var(--terran-primary);
+  --terran-status-inactive: #444455;
+  --terran-status-recording: var(--terran-danger);
+  --terran-status-processing: var(--terran-info);
+
+  /* ========================================
+     字体系统 - Typography
+     ======================================== */
+
+  /* 字体族：科幻字体优先 */
+  --terran-font-display: 'Orbitron', 'Rajdhani', 'Roboto Mono', monospace;
+  --terran-font-body: 'Roboto', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  --terran-font-mono: 'Roboto Mono', 'Consolas', 'Monaco', monospace;
+
+  /* 字号 */
+  --terran-font-size-xs: 11px;
+  --terran-font-size-sm: 12px;
+  --terran-font-size-md: 14px;
+  --terran-font-size-lg: 16px;
+  --terran-font-size-xl: 18px;
+  --terran-font-size-2xl: 24px;
+
+  /* 字重 */
+  --terran-font-weight-normal: 400;
+  --terran-font-weight-medium: 500;
+  --terran-font-weight-bold: 600;
+  --terran-font-weight-black: 700;
+
+  /* 行高 */
+  --terran-line-height-tight: 1.2;
+  --terran-line-height-normal: 1.5;
+  --terran-line-height-relaxed: 1.8;
+
+  /* ========================================
+     间距系统 - Spacing
+     ======================================== */
+
+  --terran-spacing-xs: 4px;
+  --terran-spacing-sm: 8px;
+  --terran-spacing-md: 12px;
+  --terran-spacing-lg: 16px;
+  --terran-spacing-xl: 20px;
+  --terran-spacing-2xl: 24px;
+  --terran-spacing-3xl: 32px;
+
+  /* ========================================
+     圆角系统 - Border Radius
+     ======================================== */
+
+  /* 军工硬朗风格：小圆角 */
+  --terran-radius-sm: 2px;
+  --terran-radius-md: 4px;
+  --terran-radius-lg: 6px;
+  --terran-radius-xl: 8px;
+  --terran-radius-circle: 50%;
+
+  /* ========================================
+     阴影系统 - Shadows
+     ======================================== */
+
+  /* 硬边阴影 */
+  --terran-shadow-hard: 0 2px 0 rgba(0, 0, 0, 0.5);
+  --terran-shadow-elevated: 0 4px 8px rgba(0, 0, 0, 0.4);
+
+  /* 发光阴影 */
+  --terran-glow-primary: 0 0 8px var(--terran-primary-glow);
+  --terran-glow-primary-strong: 0 0 16px var(--terran-primary-glow-strong);
+  --terran-glow-danger: 0 0 8px var(--terran-danger-glow);
+  --terran-glow-info: 0 0 8px var(--terran-info-glow);
+  --terran-glow-warning: 0 0 8px var(--terran-warning-glow);
+
+  /* 文字发光 */
+  --terran-text-glow-primary: 0 0 10px var(--terran-primary-glow);
+  --terran-text-glow-danger: 0 0 10px var(--terran-danger-glow);
+
+  /* 内阴影 */
+  --terran-inset-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3);
+  --terran-inset-glow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  /* ========================================
+     过渡动画 - Transitions
+     ======================================== */
+
+  --terran-transition-fast: 0.15s ease;
+  --terran-transition-base: 0.2s ease;
+  --terran-transition-slow: 0.3s ease;
+
+  /* ========================================
+     组件特定变量 - Component Specific
+     ======================================== */
+
+  /* StatusBar */
+  --terran-statusbar-bg: linear-gradient(135deg, #0d0d14 0%, #151520 100%);
+  --terran-statusbar-border: 1px solid var(--terran-border-primary);
+
+  /* ChatWindow */
+  --terran-chat-bg: linear-gradient(180deg, var(--terran-bg-primary) 0%, var(--terran-bg-secondary) 100%);
+  --terran-chat-body-bg: linear-gradient(180deg, var(--terran-bg-secondary) 0%, var(--terran-bg-tertiary) 100%);
+
+  /* MessageBubble */
+  --terran-msg-assistant-bg: var(--terran-bg-tertiary);
+  --terran-msg-assistant-border: 2px solid var(--terran-primary);
+  --terran-msg-user-bg: linear-gradient(135deg, var(--terran-info-dark) 0%, var(--terran-info) 100%);
+  --terran-msg-user-border: none;
+
+  /* InputArea */
+  --terran-input-bg: var(--terran-bg-tertiary);
+  --terran-input-border: 1px solid var(--terran-border-primary);
+  --terran-input-focus-border: 1px solid var(--terran-primary);
+  --terran-input-focus-glow: var(--terran-glow-primary);
+
+  /* Buttons */
+  --terran-btn-primary-bg: var(--terran-primary);
+  --terran-btn-primary-hover: var(--terran-primary-light);
+  --terran-btn-danger-bg: var(--terran-danger);
+  --terran-btn-danger-hover: var(--terran-danger-light);
 }

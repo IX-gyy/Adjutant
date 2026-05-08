@@ -1,11 +1,10 @@
-/* 统一引入所有样式 */
+/* ============================================
+   泰伦帝国军工科幻主题 - 样式入口
+   Terran Empire Theme Entry
+   ============================================ */
+
+/* 引入CSS变量体系 */
 @import './variables.css';
+
+/* 引入全局样式 */
 @import './global.css';
-/* 组件样式（若保留组件scoped，可注释此部分） */
-@import './components/ChatWindow.css';
-@import './components/StatusBar.css';
-@import './components/InputArea.css';
-@import './components/MessageList.css';
-@import './components/MessageItem.css';
-@import './components/LoadingMask.css';
-@import './components/VoiceButton.css';

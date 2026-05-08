@@ -106,13 +106,16 @@ function handleClearHistory() {
 </script>
 
 <style scoped>
+/* 主题修改：StatusBar 舰桥风格深色渐变 */
 .status-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px;
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-  color: #fff;
+  padding: var(--terran-spacing-sm) var(--terran-spacing-lg);
+  /* 舰桥风格深色渐变 */
+  background: var(--terran-statusbar-bg);
+  border-bottom: var(--terran-statusbar-border);
+  color: var(--terran-text-primary);
   -webkit-app-region: drag;
   user-select: none;
 }
@@ -120,67 +123,73 @@ function handleClearHistory() {
 .status-title {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--terran-spacing-md);
   -webkit-app-region: no-drag;
 }
 
+/* 主题修改：应用名称带主色发光效果 */
 .app-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #52c41a;
-  text-shadow: 0 0 10px rgba(82, 196, 26, 0.5);
-}
-
-.loading-text {
-  font-size: 12px;
-  color: #8c8c8c;
+  font-family: var(--terran-font-display);
+  font-size: var(--terran-font-size-md);
+  font-weight: var(--terran-font-weight-bold);
+  color: var(--terran-primary);
+  text-shadow: var(--terran-text-glow-primary);
+  letter-spacing: 1px;
 }
 
 .status-indicators {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--terran-spacing-lg);
   -webkit-app-region: no-drag;
 }
 
+/* 主题修改：状态指示器样式 */
 .status-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--terran-spacing-sm);
   opacity: 0.4;
-  transition: opacity 0.3s ease;
+  transition: opacity var(--terran-transition-slow);
 }
 
 .status-item.active {
   opacity: 1;
 }
 
+/* 主题修改：状态指示灯 */
 .status-dot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
-  background: #8c8c8c;
-  transition: all 0.3s ease;
+  border-radius: var(--terran-radius-circle);
+  background: var(--terran-status-inactive);
+  transition: all var(--terran-transition-slow);
 }
 
+/* 主题修改：激活状态带发光效果 */
 .status-dot.active {
-  background: #52c41a;
-  box-shadow: 0 0 8px rgba(82, 196, 26, 0.6);
+  background: var(--terran-status-active);
+  box-shadow: var(--terran-glow-primary);
+  animation: pulse 2s infinite;
 }
 
 .status-label {
-  font-size: 11px;
-  color: #bfbfbf;
+  font-family: var(--terran-font-mono);
+  font-size: var(--terran-font-size-xs);
+  color: var(--terran-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .status-item.active .status-label {
-  color: #fff;
+  color: var(--terran-text-primary);
 }
 
+/* 窗口控制按钮 */
 .window-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--terran-spacing-sm);
   -webkit-app-region: no-drag;
 }
 
@@ -189,25 +198,38 @@ function handleClearHistory() {
   height: 28px;
   border: none;
   background: transparent;
-  color: #bfbfbf;
+  color: var(--terran-text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
-  transition: all 0.2s ease;
+  border-radius: var(--terran-radius-md);
+  transition: all var(--terran-transition-base);
 }
 
 .control-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
+  background: var(--terran-bg-quaternary);
+  color: var(--terran-text-primary);
 }
 
+/* 主题修改：关闭按钮hover对应颜色反馈 */
 .control-btn.close:hover {
-  background: #ff4d4f;
+  background: var(--terran-danger);
+  color: #fff;
+  box-shadow: var(--terran-glow-danger);
 }
 
+/* 主题修改：清除历史按钮hover对应颜色反馈 */
 .control-btn.clear-history:hover {
-  background: #faad14;
+  background: var(--terran-warning);
+  color: var(--terran-bg-primary);
+  box-shadow: var(--terran-glow-warning);
+}
+
+/* 主题修改：最小化按钮hover效果 */
+.control-btn.minimize:hover {
+  background: var(--terran-info);
+  color: #fff;
+  box-shadow: var(--terran-glow-info);
 }
 </style>

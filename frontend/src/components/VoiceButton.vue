@@ -60,31 +60,36 @@ function stopRecording() {
 </script>
 
 <style scoped>
+/* 主题修改：VoiceButton 使用CSS变量 */
 .voice-btn {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
+  border-radius: var(--terran-radius-circle);
   border: none;
-  background: #f0f0f0;
-  color: #595959;
+  background: var(--terran-bg-quaternary);
+  color: var(--terran-text-secondary);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
-  transition: all 0.2s ease;
+  transition: all var(--terran-transition-base);
   overflow: hidden;
 }
 
+/* 主题修改：hover效果 */
 .voice-btn:hover:not(:disabled) {
-  background: #e6f7ff;
-  color: #1890ff;
+  background: var(--terran-bg-tertiary);
+  color: var(--terran-primary);
+  box-shadow: var(--terran-glow-primary);
 }
 
+/* 主题修改：录音状态使用帝国暗红+脉冲动画 */
 .voice-btn.is-recording {
-  background: #ff4d4f;
+  background: var(--terran-danger);
   color: #fff;
-  animation: recording-pulse 1s infinite;
+  animation: recordingPulse 1s infinite;
+  box-shadow: var(--terran-glow-danger);
 }
 
 .voice-btn.is-disabled {
@@ -92,15 +97,7 @@ function stopRecording() {
   cursor: not-allowed;
 }
 
-@keyframes recording-pulse {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(255, 77, 79, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(255, 77, 79, 0);
-  }
-}
-
+/* 主题修改：音频电平条贴合主题色 */
 .voice-icon {
   display: flex;
   align-items: center;
@@ -114,14 +111,15 @@ function stopRecording() {
   left: 0;
   right: 0;
   height: 100%;
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: flex-end;
 }
 
 .audio-level-fill {
   width: 100%;
-  background: rgba(255, 255, 255, 0.5);
+  background: linear-gradient(180deg, var(--terran-primary-light) 0%, var(--terran-primary) 100%);
   transition: height 0.1s ease;
+  box-shadow: 0 0 4px var(--terran-primary-glow);
 }
 </style>

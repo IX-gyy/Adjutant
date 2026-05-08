@@ -215,6 +215,19 @@ function ensureListener() {
   }, 100) // 短暂延迟确保Vue加载完成
 }
 
+// 清理函数 - 用于组件卸载时取消订阅
+export function cleanupModelStatusListener() {
+  if (unsubscribe) {
+    unsubscribe()
+    unsubscribe = null
+  }
+  isRegistered = false
+  if (statusRetryTimer) {
+    clearTimeout(statusRetryTimer)
+    statusRetryTimer = null
+  }
+}
+
 // 模块加载时尽快注册
 if (typeof window !== 'undefined') {
   setTimeout(() => {
