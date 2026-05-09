@@ -14,6 +14,18 @@ let unsubscribe: (() => void) | null = null
 const isInitialized = () => !!window.__useTTS_initialized
 
 /**
+ * 播放提示音效
+ */
+function playAttentionSound(): void {
+  const audio = new Audio('/attention.mp3')
+  audio.volume = 0.5
+  audio.play().catch(err => {
+    // 自动播放策略可能阻止播放，静默处理
+    console.log('[TTS] 提示音效播放失败:', err)
+  })
+}
+
+/**
  * 处理后端事件
  */
 function handleBackendEvent(event: BackendEvent) {
@@ -21,6 +33,8 @@ function handleBackendEvent(event: BackendEvent) {
     case 'tts_started':
       isTtsPlaying.value = true
       isTtsLoading.value = false
+      // AI开始说话时播放提示音效
+      playAttentionSound()
       break
 
     case 'tts_stopped':

@@ -12,21 +12,21 @@
       <div class="message-avatar">
         <AAvatar
           :size="40"
-          src="/adjutant-avatar.ico"
-          class="assistant-avatar"
+          :src="isEmperorMessage ? '/emperor_avatar.jpg' : '/adjutant-avatar.ico'"
+          :class="isEmperorMessage ? 'emperor-avatar' : 'assistant-avatar'"
         >
           <template #icon><RobotOutlined /></template>
         </AAvatar>
       </div>
       <div class="message-content">
-        <div class="message-bubble">
+        <div class="message-bubble" :class="{ 'emperor-bubble': isEmperorMessage }">
           <div class="message-text" v-html="formattedContent"></div>
         </div>
         <div class="message-actions">
           <div class="message-time">{{ formattedTime }}</div>
           <!-- TTS播放按钮 -->
           <AButton
-            v-if="isTtsReady"
+            v-if="isTtsReady && !isEmperorMessage"
             type="link"
             size="small"
             class="tts-btn"
@@ -79,9 +79,22 @@ interface Props {
 
 const props = defineProps<Props>()
 
+// 判断是否为元首通讯消息
+const isEmperorMessage = computed(() => {
+  return props.message.content.startsWith('【元首通讯】')
+})
+
+// 处理后的内容（去掉前缀）
+const displayContent = computed(() => {
+  if (isEmperorMessage.value) {
+    return props.message.content.replace('【元首通讯】', '')
+  }
+  return props.message.content
+})
+
 const formattedContent = computed(() => {
   // 简单处理换行符
-  return props.message.content.replace(/\n/g, '<br>')
+  return displayContent.value.replace(/\n/g, '<br>')
 })
 
 const formattedTime = computed(() => {
@@ -148,6 +161,14 @@ function handleTtsPlay() {
   box-shadow: var(--terran-glow-primary);
 }
 
+/* 元首头像样式 - 红色边框 */
+.emperor-avatar {
+  background: linear-gradient(135deg, #ff4d4f 0%, #a8071a 100%);
+  color: #fff;
+  border: 2px solid #ffd700;
+  box-shadow: 0 0 10px rgba(255, 77, 79, 0.6), 0 0 20px rgba(255, 215, 0, 0.3);
+}
+
 /* 主题修改：用户头像使用深空蓝渐变 */
 .user-avatar {
   background: linear-gradient(135deg, var(--terran-info) 0%, var(--terran-info-dark) 100%);
@@ -195,6 +216,24 @@ function handleTtsPlay() {
   border-left: 3px solid var(--terran-primary);
   border-bottom-left-radius: var(--terran-radius-sm);
   box-shadow: var(--terran-inset-shadow);
+}
+
+/* 元首通讯消息样式 - 红色打底，金色点缀 */
+.message-assistant .message-bubble.emperor-bubble {
+  background: linear-gradient(135deg, rgba(255, 77, 79, 0.15) 0%, rgba(168, 7, 26, 0.1) 100%);
+  color: #ffccc7;
+  border: 1px solid #ffd700;
+  border-left: 4px solid #ffd700;
+  border-bottom-left-radius: var(--terran-radius-sm);
+  box-shadow:
+    0 0 15px rgba(255, 77, 79, 0.3),
+    0 0 30px rgba(255, 215, 0, 0.1),
+    inset 0 0 20px rgba(255, 77, 79, 0.05);
+}
+
+.message-assistant .message-bubble.emperor-bubble .message-text {
+  color: #ffccc7;
+  text-shadow: 0 0 2px rgba(255, 77, 79, 0.5);
 }
 
 .message-text {

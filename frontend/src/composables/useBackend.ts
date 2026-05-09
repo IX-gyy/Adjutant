@@ -182,6 +182,14 @@ export function startLoading() {
 }
 
 /**
+ * 设置彩蛋开关状态
+ */
+export function setEasterEggEnabled(enabled: boolean) {
+  console.log('[useBackend] 设置彩蛋开关:', enabled)
+  sendToBackend({ action: 'set_easter_egg', enabled })
+}
+
+/**
  * useBackend Composable
  * 提供后端通信的基础功能
  */
@@ -190,26 +198,28 @@ export function useBackend() {
   if (isInitialized()) {
     console.log('[useBackend] 已初始化，跳过')
     return {
-    isBackendReady,
-    backendError,
-    sendToBackend,
-    onBackendEvent,
-    onceBackendEvent,
-    setWakeMode,
-    setTranscribeMode,
-    requestHistory,
-    clearHistory,
-    transcribeFile,
-    sendMessage,
-    cancelGeneration,
-    ttsPlay,
-    ttsStop,
-    showWindow,
-    hideWindow,
-    minimizeWindow,
-    getBackendPath,
+      isBackendReady,
+      backendError,
+      sendToBackend,
+      onBackendEvent,
+      onceBackendEvent,
+      setWakeMode,
+      setTranscribeMode,
+      requestHistory,
+      requestStatus,
+      clearHistory,
+      transcribeFile,
+      sendMessage,
+      cancelGeneration,
+      ttsPlay,
+      ttsStop,
+      setEasterEggEnabled,
+      showWindow,
+      hideWindow,
+      minimizeWindow,
+      getBackendPath,
+    }
   }
-}
 
   console.log('[useBackend] 开始初始化')
 
@@ -257,12 +267,14 @@ export function useBackend() {
     setWakeMode,
     setTranscribeMode,
     requestHistory,
+    requestStatus,
     clearHistory,
     transcribeFile,
     sendMessage,
     cancelGeneration,
     ttsPlay,
     ttsStop,
+    setEasterEggEnabled,
     showWindow,
     hideWindow,
     minimizeWindow,

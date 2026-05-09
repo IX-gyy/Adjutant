@@ -98,6 +98,27 @@ function handleBackendEvent(event: BackendEvent) {
         isTranscribing.value = false
       }
       break
+
+    case 'egg_triggered':
+      // 彩蛋触发，不走LLM流程，直接展示彩蛋消息
+      // 先添加过渡语消息（副官）
+      messages.value.push({
+        id: generateId(),
+        role: 'assistant',
+        content: event.transition_text,
+        timestamp: Date.now(),
+      })
+      // 再添加蒙斯克语音消息（assistant角色，但带特殊标识）
+      messages.value.push({
+        id: generateId(),
+        role: 'assistant',
+        content: `【元首通讯】${event.display_text}`,
+        timestamp: Date.now(),
+      })
+      // 重置生成状态（因为彩蛋不走LLM，不会触发chat_complete）
+      isGenerating.value = false
+      currentResponse.value = ''
+      break
   }
 }
 

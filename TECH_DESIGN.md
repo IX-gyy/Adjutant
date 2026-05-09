@@ -152,3 +152,70 @@ audio_queue, chat_request_queue, tts_request_queue
 | history_loaded          | history: list       | 对话历史         |
 | history_cleared         | -                   | 历史已清空       |
 | error                   | type: str, msg: str | 错误信息         |
+| egg_triggered           | id, transition_text, display_text, audio_file | 彩蛋触发事件 |
+| easter_egg_status       | enabled: boolean    | 彩蛋开关状态更新 |
+
+## 彩蛋系统
+
+### 功能概述
+彩蛋系统是副官AI的特色功能，当用户输入特定触发词时，会播放蒙斯克元首的经典语音，增强交互趣味性。
+
+### 前置校验规则
+1. **全局彩蛋开关**：只有开关处于「开启」状态时，才会进入彩蛋匹配流程
+2. **强制前缀校验**：所有彩蛋触发，必须满足用户输入以「副官」/「副官，」开头
+
+### 触发流程
+```
+用户输入 → 前缀校验 → 彩蛋开关检查 → JSON规则匹配 → 推送egg_triggered事件
+                                              ↓
+                                       匹配失败 → 正常LLM流程
+```
+
+### 匹配优先级（从高到低）
+1. **精准指令匹配**：100% 完全匹配用户输入的整句话，无模糊匹配，用于隐藏高稀有度彩蛋
+2. **场景关键词匹配**：必须同时命中 2 组及以上关键词，避免单字误触，用于日常自然触发
+3. **简化关键词匹配**：必须命中至少 1 个≥2 字的核心关键词，低门槛易探索
+
+### 前端展示效果
+- **过渡消息**：副官头像 + 普通消息样式，显示「收到元首加密通讯，请聆听最高指示」
+- **元首通讯消息**：蒙斯克专属头像 + 帝国红金样式 +【元首通讯】标识
+
+### 音频播报流程
+1. 先播放副官过渡语的 TTS（副官默认音色）
+2. 再播放蒙斯克的预录语音（本地音频文件）
+3. 播报完成后推送 `tts_complete` 事件
+
+### 指令与事件扩展
+| 指令/事件 | 参数 | 说明 |
+|-----------|------|------|
+| set_easter_egg | enabled: boolean | 设置彩蛋开关状态 |
+| get_status | - | 获取状态（返回包含 easter_egg_enabled）|
+
+### 项目目录结构（含彩蛋）
+```
+backend/
+├── config/
+│   └── easter_egg_rules.json    # 彩蛋匹配规则配置
+├── asserts/
+│   └── audio/                   # 彩蛋音频文件
+│       ├── cherish.wav
+│       ├── confident.wav
+│       ├── danger.wav
+│       ├── determination.wav
+│       ├── employ.wav
+│       ├── encourage.wav
+│       ├── focus.wav
+│       ├── home.wav
+│       ├── invaluable_time.wav
+│       ├── launch.wav
+│       ├── noisy.wav
+│       ├── people.wav
+│       ├── people2.wav
+│       ├── protect.wav
+│       ├── radiation.wav
+│       ├── urge.wav
+│       ├── victory.wav
+│       └── 总有刁民想害朕.wav
+├── backend.exe
+└── ...
+```

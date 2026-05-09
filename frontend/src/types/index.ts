@@ -160,6 +160,26 @@ export interface StatusUpdateEvent extends BaseBackendEvent {
   llm_model_loaded: boolean
   tts_model_loaded: boolean
   history_count: number
+  easter_egg_enabled?: boolean
+}
+
+/**
+ * 彩蛋触发事件
+ */
+export interface EggTriggeredEvent extends BaseBackendEvent {
+  event: 'egg_triggered'
+  id: string
+  transition_text: string
+  display_text: string
+  audio_file: string
+}
+
+/**
+ * 彩蛋状态更新事件
+ */
+export interface EasterEggStatusEvent extends BaseBackendEvent {
+  event: 'easter_egg_status'
+  enabled: boolean
 }
 
 /**
@@ -185,6 +205,8 @@ export type BackendEvent =
   | HistoryClearedEvent
   | ErrorEvent
   | StatusUpdateEvent
+  | EggTriggeredEvent
+  | EasterEggStatusEvent
 
 // ================= 前端指令类型 =================
 
@@ -270,6 +292,14 @@ export interface StartLoadingAction extends BaseFrontendAction {
 }
 
 /**
+ * 设置彩蛋开关指令
+ */
+export interface SetEasterEggAction extends BaseFrontendAction {
+  action: 'set_easter_egg'
+  enabled: boolean
+}
+
+/**
  * 前端指令联合类型
  */
 export type FrontendAction =
@@ -283,6 +313,7 @@ export type FrontendAction =
   | TtsPlayAction
   | TtsStopAction
   | StartLoadingAction
+  | SetEasterEggAction
 
 // ================= 对话相关类型 =================
 

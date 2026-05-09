@@ -25,23 +25,28 @@ except ImportError:
 spec_dir = os.path.dirname(os.path.abspath(SPEC))
 block_cipher = None
 
-# ────────────────── 1. 原有数据文件打包 (vosk + llama_cpp + models) ──────────────────
-# 需要内置数据文件的第三方包（新增 TTS 相关）
+# ────────────────── 1. 数据文件打包 ──────────────────
+# 需要内置数据文件的第三方包（TTS 相关）
 packages_with_data = [
     'kokoro_onnx',
     'misaki',
     'language_tags',
     'csvw',
     'segments',
-    'espeakng_loader',       # eSpeak NG 二进制加载器
+    'espeakng_loader',
 ]
 
 all_datas = []
 
-# 添加用户自己的模型文件夹
+# 原有模型文件夹
 all_datas.append((os.path.join(spec_dir, 'models'), 'models'))
 
-# 收集以上第三方包的数据文件（如配置、预置模型等）
+# 彩蛋系统新增：规则配置目录
+all_datas.append((os.path.join(spec_dir, 'config'), 'config'))
+# 彩蛋系统新增：音频资源目录（注意拼写为 assets）
+all_datas.append((os.path.join(spec_dir, 'assets'), 'assets'))
+
+# 收集以上第三方包的数据文件
 for pkg in packages_with_data:
     try:
         all_datas.extend(collect_data_files(pkg))
@@ -51,7 +56,7 @@ for pkg in packages_with_data:
 # 原有 vosk 完整库打包
 all_datas.append((VOSK_LIB_PATH, 'vosk'))
 
-# 原有 llama_cpp 的 lib 目录打包（含 .dll / .so）
+# 原有 llama_cpp 的 lib 目录打包
 all_datas.append((os.path.join(LLAMA_CPP_PATH, 'lib'), 'llama_cpp/lib'))
 
 # ────────────────── 2. 二进制文件打包（动态库）──────────────────

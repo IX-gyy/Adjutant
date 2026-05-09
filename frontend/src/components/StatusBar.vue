@@ -38,6 +38,25 @@
       </div>
     </div>
     <div class="window-controls">
+      <!-- 彩蛋滑动开关 -->
+      <div
+        class="easter-egg-toggle"
+        :class="{ active: easterEggEnabled }"
+        @click="toggleEasterEgg"
+        :title="easterEggEnabled ? '彩蛋已开启' : '彩蛋已关闭'"
+      >
+        <div class="toggle-track">
+          <div class="toggle-thumb">
+            <!-- 电源图标 -->
+            <svg class="power-icon" viewBox="0 0 24 24" width="10" height="10">
+              <path
+                fill="currentColor"
+                d="M12 3a1 1 0 0 1 1 1v8a1 1 0 1 1-2 0V4a1 1 0 0 1 1-1zm-5.657 3.343a1 1 0 0 1 0 1.414 7 7 0 1 0 9.9 0 1 1 0 1 1 1.414-1.414 9 9 0 1 1-12.728 0 1 1 0 0 1 1.414 0z"
+              />
+            </svg>
+          </div>
+        </div>
+      </div>
       <button class="control-btn clear-history" @click="handleClearHistory" title="清除历史">
         <svg viewBox="0 0 24 24" width="12" height="12">
           <path
@@ -64,10 +83,10 @@
 </template>
 
 <script setup lang="ts">
-import { hideWindow, clearHistory } from '../composables/useBackend'
+import { ref, onMounted, h } from 'vue'
+import { hideWindow, clearHistory, setEasterEggEnabled, requestStatus, onBackendEvent } from '../composables/useBackend'
 import { Modal } from 'ant-design-vue'
 import { ExclamationCircleOutlined } from '@ant-design/icons-vue'
-import { h } from 'vue'
 
 interface Props {
   wakeReady: boolean
@@ -77,6 +96,27 @@ interface Props {
 }
 
 defineProps<Props>()
+
+const easterEggEnabled = ref(true)
+
+onMounted(() => {
+  // 监听彩蛋状态更新
+  onBackendEvent((event) => {
+    if (event.event === 'easter_egg_status') {
+      easterEggEnabled.value = event.enabled
+    } else if (event.event === 'status_update' && event.easter_egg_enabled !== undefined) {
+      easterEggEnabled.value = event.easter_egg_enabled
+    }
+  })
+  // 请求当前状态
+  requestStatus()
+})
+
+function toggleEasterEgg() {
+  const newValue = !easterEggEnabled.value
+  easterEggEnabled.value = newValue
+  setEasterEggEnabled(newValue)
+}
 
 function minimizeWindow() {
   // 最小化窗口 - 任务栏保留图标
@@ -224,6 +264,76 @@ function handleClearHistory() {
   background: var(--terran-warning);
   color: var(--terran-bg-primary);
   box-shadow: var(--terran-glow-warning);
+}
+
+/* 彩蛋滑动开关样式 */
+.easter-egg-toggle {
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.toggle-track {
+  width: 44px;
+  height: 22px;
+  background: var(--terran-bg-quaternary);
+  border-radius: 11px;
+  position: relative;
+  transition: all 0.3s ease;
+  border: 1px solid var(--terran-border-secondary);
+}
+
+.easter-egg-toggle.active .toggle-track {
+  background: rgba(255, 77, 79, 0.3);
+  border-color: var(--terran-danger);
+  box-shadow: 0 0 8px rgba(255, 77, 79, 0.5), inset 0 0 4px rgba(255, 77, 79, 0.2);
+}
+
+.toggle-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--terran-bg-tertiary);
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--terran-border-secondary);
+}
+
+.easter-egg-toggle.active .toggle-thumb {
+  transform: translateX(22px);
+  background: var(--terran-danger);
+  border-color: var(--terran-danger);
+  box-shadow: 0 0 10px rgba(255, 77, 79, 0.8), 0 0 20px rgba(255, 77, 79, 0.4);
+}
+
+.power-icon {
+  width: 10px;
+  height: 10px;
+  color: var(--terran-text-secondary);
+  opacity: 0.6;
+  transition: all 0.3s ease;
+}
+
+.easter-egg-toggle.active .power-icon {
+  color: #fff;
+  opacity: 1;
+}
+
+.easter-egg-toggle:hover .toggle-track {
+  border-color: var(--terran-border-primary);
+}
+
+.easter-egg-toggle.active:hover .toggle-track {
+  border-color: var(--terran-danger);
+  box-shadow: 0 0 12px rgba(255, 77, 79, 0.7), inset 0 0 6px rgba(255, 77, 79, 0.3);
 }
 
 /* 主题修改：最小化按钮hover效果 */

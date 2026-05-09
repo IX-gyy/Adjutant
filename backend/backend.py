@@ -57,7 +57,7 @@ WAKE_WORDS = [
 
 TTS_SPEED = 1.15
 TTS_VOICE_NAME = "zf_001"          # kokoro_onnx 支持的声音名称
-STREAM_CHUNK_DELIMITERS = ("。", "！", "？", "…", "\n", "\r")   # 流式分段触发标点（暂未使用）
+STREAM_CHUNK_DELIMITERS = ("。", "！", "？", "…", "\n", "\r")
 STREAM_CHUNK_MIN_LEN = 10
 STREAM_CHUNK_MAX_LEN = 100
 
@@ -89,8 +89,8 @@ TTS_ONNX_PATH = os.path.join(BASE_DIR, "models", "kokoro-zh/kokoro-v1.1-zh.onnx"
 TTS_VOICES_BIN_PATH = os.path.join(BASE_DIR, "models", "kokoro-zh/voices-v1.1-zh.bin")
 TTS_CONFIG_PATH = os.path.join(BASE_DIR, "models", "kokoro-zh/config.json")
 
-# misaki 中文 G2P 模型目录（可离线存放，如不存在会自动下载）
-# MISAKI_MODEL_DIR = os.path.join(DATA_DIR, "misaki")
+# 彩蛋配置文件
+EASTER_EGG_RULES_PATH = os.path.join(BASE_DIR, "config", "easter_egg_rules.json")
 
 HISTORY_FILE_PATH = os.path.join(DATA_DIR, "history.json")
 
@@ -130,6 +130,10 @@ tts_g2p = None
 tts_kokoro = None
 
 chat_history = []
+
+# ================= 彩蛋系统全局状态 =================
+easter_egg_enabled = True          # 彩蛋总开关，默认开启
+easter_egg_rules = []              # 从 JSON 加载的规则列表
 
 # ================= 工具函数 =================
 def fuzzy_match_wake_word(text):
@@ -205,6 +209,66 @@ def clear_audio_queue():
             audio_queue.get_nowait()
         except queue.Empty:
             break
+
+# ================= 彩蛋系统核心函数 =================
+def load_easter_egg_rules():
+    global easter_egg_rules
+    if os.path.exists(EASTER_EGG_RULES_PATH):
+        try:
+            with open(EASTER_EGG_RULES_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                easter_egg_rules = data.get("rules", [])
+            print(f"[Backend] 彩蛋规则加载完成，共{len(easter_egg_rules)}条规则", file=sys.stderr)
+        except Exception as e:
+            print(f"[Backend] 彩蛋规则加载失败: {e}", file=sys.stderr)
+            easter_egg_rules = []
+    else:
+        print("[Backend] 未找到彩蛋规则文件，彩蛋功能暂时不可用", file=sys.stderr)
+        easter_egg_rules = []
+
+def match_easter_egg(user_input: str):
+    """
+    按优先级匹配彩蛋规则，返回命中的规则字典或 None。
+    优先级: exact > scene_keyword > simple_keyword
+    """
+    # 按优先级分组
+    exact_rules = [r for r in easter_egg_rules if r.get("type") == "exact"]
+    scene_rules = [r for r in easter_egg_rules if r.get("type") == "scene_keyword"]
+    simple_rules = [r for r in easter_egg_rules if r.get("type") == "simple_keyword"]
+
+    # 1. 精准匹配
+    for rule in exact_rules:
+        match_cfg = rule.get("match", {})
+        texts = match_cfg.get("texts", [])
+        if user_input in texts:
+            print(f"[EasterEgg] 精准命中: {rule['id']}", file=sys.stderr)
+            return rule
+
+    # 2. 场景关键词匹配
+    for rule in scene_rules:
+        match_cfg = rule.get("match", {})
+        core_keywords = match_cfg.get("core_keywords", [])
+        aux_keywords = match_cfg.get("aux_keywords", [])
+        min_core = match_cfg.get("min_core", 1)
+        min_aux = match_cfg.get("min_aux", 1)
+
+        core_hits = sum(1 for kw in core_keywords if kw in user_input)
+        aux_hits = sum(1 for kw in aux_keywords if kw in user_input)
+        if core_hits >= min_core and aux_hits >= min_aux:
+            print(f"[EasterEgg] 场景关键词命中: {rule['id']} (核心{core_hits}/{min_core}, 辅助{aux_hits}/{min_aux})", file=sys.stderr)
+            return rule
+
+    # 3. 简化关键词匹配
+    for rule in simple_rules:
+        match_cfg = rule.get("match", {})
+        keywords = match_cfg.get("keywords", [])
+        min_hits = match_cfg.get("min_hits", 1)
+        hits = sum(1 for kw in keywords if kw in user_input)
+        if hits >= min_hits:
+            print(f"[EasterEgg] 简化关键词命中: {rule['id']} ({hits}/{min_hits})", file=sys.stderr)
+            return rule
+
+    return None
 
 # ================= 音频转写核心函数 =================
 def vosk_transcribe_audio(audio_file_path, model):
@@ -325,9 +389,7 @@ def model_load_thread():
         return
     try:
         print("[Backend] 正在加载TTS模型 (misaki + kokoro_onnx)...", file=sys.stderr)
-        # 初始化中文 G2P（会自动下载模型到 model_dir，若已存在则直接加载）
         tts_g2p = zh.ZHG2P(version="1.1")
-        # 初始化 kokoro_onnx
         tts_kokoro = Kokoro(TTS_ONNX_PATH, TTS_VOICES_BIN_PATH, vocab_config=TTS_CONFIG_PATH)
         print("[Backend] TTS模型加载完成", file=sys.stderr)
         send_msg_to_electron({"event": "tts_model_loaded"})
@@ -336,13 +398,15 @@ def model_load_thread():
         send_msg_to_electron({"event": "error", "type": "tts_model_load_fail", "msg": str(e)})
         fatal_error_event.set()
         return
+    # 加载彩蛋规则
+    load_easter_egg_rules()
     print("[Backend] 所有模型加载完成", file=sys.stderr)
     send_msg_to_electron({"event": "full_ready"})
     load_chat_history()
-    # 所有模型加载完成后，TTS 播报欢迎语
+    # 播放欢迎语
     welcome_text = "您好指挥官，副官已上线"
     print(f"[Backend] 播放欢迎语：{welcome_text}", file=sys.stderr)
-    tts_queue.put(welcome_text)
+    tts_queue.put({"type": "text", "content": welcome_text})
 
 # ================= TTS 播放线程（新实现） =================
 def tts_playback_thread():
@@ -350,12 +414,12 @@ def tts_playback_thread():
     print("[Backend] tts_playback_thread 启动", file=sys.stderr)
     while True:
         try:
-            text = tts_queue.get(timeout=0.5)
+            task = tts_queue.get(timeout=0.5)
         except queue.Empty:
             with state_lock:
                 if tts_busy and not tts_session_active:
                     tts_busy = False
-                    if transcribe_substate == "playing_tts":
+                    if transcribe_substate in ("playing_tts", "playing_egg"):
                         transcribe_substate = "idle"
             continue
 
@@ -371,36 +435,61 @@ def tts_playback_thread():
             if not tts_session_active:
                 tts_busy = True
                 tts_session_active = True
-                if transcribe_substate != "generating":  # 生成过程中不发送 start 事件
+                # 根据当前子状态决定发送什么事件
+                if transcribe_substate == "idle":
                     transcribe_substate = "playing_tts"
                     send_msg_to_electron({"event": "tts_started"})
+                elif transcribe_substate == "playing_egg":
+                    send_msg_to_electron({"event": "tts_started"})
+                # generating 时不发送 start，且不覆写状态
 
         try:
-            # 1. 文本转音素
-            phonemes, _ = tts_g2p(text)
-            # 2. 合成音频
-            samples, sample_rate = tts_kokoro.create(
-                phonemes,
-                voice=TTS_VOICE_NAME,
-                speed=TTS_SPEED,
-                is_phonemes=True
-            )
-            # 3. 播放（可中断）
-            sd.play(samples, sample_rate)
-            # 轮询等待播放完成，同时监听取消事件
-            while sd.get_stream().active:
-                if cancel_tts_event.is_set():
-                    sd.stop()
-                    raise InterruptedError("TTS cancelled")
-                time.sleep(0.05)
+            if task["type"] == "text":
+                # 文本 TTS
+                phonemes, _ = tts_g2p(task["content"])
+                samples, sample_rate = tts_kokoro.create(
+                    phonemes,
+                    voice=TTS_VOICE_NAME,
+                    speed=TTS_SPEED,
+                    is_phonemes=True
+                )
+                sd.play(samples, sample_rate)
+                while sd.get_stream().active:
+                    if cancel_tts_event.is_set():
+                        sd.stop()
+                        raise InterruptedError("TTS cancelled")
+                    time.sleep(0.05)
+
+            elif task["type"] == "audio":
+                # 预录音频播放 (WAV)
+                file_path = os.path.join(BASE_DIR, task["file"])
+                if not os.path.exists(file_path):
+                    print(f"[Backend] 彩蛋音频不存在: {file_path}", file=sys.stderr)
+                    raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+                with wave.open(file_path, 'rb') as wf:
+                    # 简单验证格式
+                    assert wf.getnchannels() == 1, "仅支持单声道"
+                    assert wf.getsampwidth() == 2, "仅支持16-bit"
+                    sr = wf.getframerate()
+                    frames = wf.readframes(wf.getnframes())
+                    audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+
+                sd.play(audio_data, samplerate=sr)
+                while sd.get_stream().active:
+                    if cancel_tts_event.is_set():
+                        sd.stop()
+                        raise InterruptedError("TTS cancelled")
+                    time.sleep(0.05)
+            else:
+                print(f"[Backend] 未知TTS任务类型: {task}", file=sys.stderr)
+
         except InterruptedError:
-            # 被外部取消，静默清理
             pass
         except Exception as e:
             print(f"[Backend] TTS播放错误: {e}", file=sys.stderr)
         finally:
             if cancel_tts_event.is_set():
-                # 外部取消：清空队列，重置状态
                 while not tts_queue.empty():
                     try:
                         tts_queue.get_nowait()
@@ -410,18 +499,16 @@ def tts_playback_thread():
                 with state_lock:
                     tts_busy = False
                     tts_session_active = False
-                    if transcribe_substate == "playing_tts":
+                    if transcribe_substate in ("playing_tts", "playing_egg"):
                         transcribe_substate = "idle"
             else:
-                # 正常结束一段
                 with state_lock:
                     if tts_queue.empty():
                         tts_busy = False
                         tts_session_active = False
-                        if transcribe_substate == "playing_tts":
+                        if transcribe_substate in ("playing_tts", "playing_egg"):
                             transcribe_substate = "idle"
-                        send_msg_to_electron({"event": "tts_complete"})
-                    # 否则保持会话，继续处理下一段
+                            send_msg_to_electron({"event": "tts_complete"})
 
 # ================= 对话推理线程（不变） =================
 def chat_inference_thread():
@@ -469,7 +556,7 @@ def chat_inference_thread():
                 continue
 
             if full_response:
-                tts_queue.put(full_response)
+                tts_queue.put({"type": "text", "content": full_response})
 
             with chat_lock:
                 chat_history.append({"role": "assistant", "content": full_response, "timestamp": int(time.time() * 1000)})
@@ -492,7 +579,7 @@ def chat_inference_thread():
 
 # ================= 主线程：指令处理 =================
 def main_thread():
-    global current_mode, transcribe_substate, chat_history, tts_busy, tts_session_active
+    global current_mode, transcribe_substate, chat_history, tts_busy, tts_session_active, easter_egg_enabled
     print("[Backend] main_thread 启动", file=sys.stderr)
     while not fatal_error_event.is_set():
         try:
@@ -506,11 +593,12 @@ def main_thread():
             msg = json.loads(line)
             action = msg.get("action")
 
-            # 全局拦截：如果当前正在生成或播放 TTS，只允许取消/停播操作（以及切换到 wake 关闭窗口）
+            # 全局拦截：生成中 / TTS播放中 / 彩蛋播放中 均锁定
             with state_lock:
                 is_generating = (current_mode == "transcribe" and transcribe_substate == "generating")
                 is_playing_tts = (current_mode == "transcribe" and transcribe_substate == "playing_tts")
-                is_locked = is_generating or is_playing_tts
+                is_playing_egg = (current_mode == "transcribe" and transcribe_substate == "playing_egg")
+                is_locked = is_generating or is_playing_tts or is_playing_egg
 
             if is_locked:
                 allowed = action in ("cancel_generation", "tts_stop", "start_loading") or (action == "set_mode" and msg.get("mode") == "wake")
@@ -527,7 +615,6 @@ def main_thread():
                         transcribe_substate = "idle"
                         stream_active.set()
                         clear_audio_queue()
-                        # 停止所有TTS活动
                         cancel_tts_event.set()
                         while not tts_queue.empty():
                             try:
@@ -566,26 +653,49 @@ def main_thread():
                     if tts_busy or transcribe_substate != "idle":
                         send_msg_to_electron({"event": "error", "msg": "正在播放语音或处理中，请稍后再试"})
                         continue
-                    transcribe_substate = "generating"
+                    # 先不立即设为 generating，可能跳去彩蛋
                 user_content = msg.get("content", "").strip()
                 if user_content:
                     user_content = user_content.encode('utf-8', errors='replace').decode('utf-8')
                 if not user_content:
-                    with state_lock:
-                        transcribe_substate = "idle"
                     send_msg_to_electron({"event": "error", "msg": "消息内容不能为空"})
                     continue
-                if not llm:
+
+                # ---------- 彩蛋系统前置拦截 ----------
+                egg_rule = None
+                if easter_egg_enabled and user_content.startswith(("副官", "副官，")):
+                    egg_rule = match_easter_egg(user_content)
+
+                if egg_rule:
+                    # 命中彩蛋，不走 LLM
                     with state_lock:
-                        transcribe_substate = "idle"
+                        transcribe_substate = "playing_egg"
+                    # 推送彩蛋触发事件
+                    send_msg_to_electron({
+                        "event": "egg_triggered",
+                        "id": egg_rule["id"],
+                        "transition_text": egg_rule["transition_text"],
+                        "display_text": egg_rule["display_text"],
+                        "audio_file": egg_rule["audio_file"]
+                    })
+                    # 放入播放队列：先过渡语 TTS，再彩蛋音频
+                    tts_queue.put({"type": "text", "content": egg_rule["transition_text"]})
+                    tts_queue.put({"type": "audio", "file": egg_rule["audio_file"]})
+                    # 注意：状态已设为 playing_egg，后续播放线程会处理完成
+                    continue
+
+                # ---------- 正常 LLM 流程 ----------
+                if not llm:
                     send_msg_to_electron({"event": "error", "msg": "对话模型尚未加载完成"})
                     continue
+                with state_lock:
+                    transcribe_substate = "generating"
                 chat_request_queue.put(user_content)
 
             elif action == "cancel_generation":
                 with state_lock:
-                    if not (current_mode == "transcribe" and transcribe_substate == "generating"):
-                        send_msg_to_electron({"event": "error", "msg": "当前没有生成任务"})
+                    if not (current_mode == "transcribe" and transcribe_substate in ("generating", "playing_egg")):
+                        send_msg_to_electron({"event": "error", "msg": "当前没有可取消的任务"})
                         continue
                 cancel_generation_event.set()
                 cancel_tts_event.set()
@@ -624,7 +734,7 @@ def main_thread():
                 if not text:
                     send_msg_to_electron({"event": "error", "msg": "播报文本不能为空"})
                     continue
-                tts_queue.put(text)
+                tts_queue.put({"type": "text", "content": text})
 
             elif action == "clear_history":
                 with chat_lock:
@@ -648,9 +758,16 @@ def main_thread():
                         "transcribe_model_loaded": transcribe_model is not None,
                         "llm_model_loaded": llm is not None,
                         "tts_model_loaded": tts_g2p is not None and tts_kokoro is not None,
-                        "history_count": len(chat_history)
+                        "history_count": len(chat_history),
+                        "easter_egg_enabled": easter_egg_enabled
                     }
                 send_msg_to_electron(status)
+
+            elif action == "set_easter_egg":
+                enabled = msg.get("enabled", True)
+                easter_egg_enabled = bool(enabled)
+                print(f"[Backend] 彩蛋开关已设置为: {easter_egg_enabled}", file=sys.stderr)
+                send_msg_to_electron({"event": "easter_egg_status", "enabled": easter_egg_enabled})
 
             elif action == "start_loading":
                 global model_loading_started
