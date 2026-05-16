@@ -1,6 +1,6 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { onBackendEvent, sendMessage, cancelGeneration, clearHistory, requestHistory } from './useBackend'
-import type { BackendEvent } from '../types'
+import type { BackendEvent, TodoItem } from '../types'
 
 // 消息类型定义
 export interface ChatMessage {
@@ -16,6 +16,10 @@ export const isGenerating = ref(false)
 export const currentResponse = ref('')
 export const inputText = ref('')
 export const isTranscribing = ref(false)  // 语音转写中状态
+
+// 待办事项状态
+export const todos = ref<TodoItem[]>([])
+export const currentFilter = ref<'all' | 'today'>('all')
 
 // 计算属性
 export const hasMessages = computed(() => messages.value.length > 0)
@@ -118,6 +122,31 @@ function handleBackendEvent(event: BackendEvent) {
       // 重置生成状态（因为彩蛋不走LLM，不会触发chat_complete）
       isGenerating.value = false
       currentResponse.value = ''
+      break
+
+    case 'todo_added':
+      // 待办事项已添加
+      todos.value.push(event.todo)
+      break
+
+    case 'todo_list':
+      // 待办事项列表返回
+      todos.value = event.todos
+      currentFilter.value = event.filter as 'all' | 'today'
+      break
+
+    case 'todo_updated':
+      // 待办事项状态更新
+      if (event.deleted) {
+        // 删除操作
+        todos.value = todos.value.filter(t => t.id !== event.todo_id)
+      } else if (event.status === 'completed') {
+        // 完成操作
+        const todo = todos.value.find(t => t.id === event.todo_id)
+        if (todo) {
+          todo.status = 'completed'
+        }
+      }
       break
   }
 }
@@ -268,6 +297,8 @@ export function useChat() {
     currentResponse,
     inputText,
     isTranscribing,
+    todos,
+    currentFilter,
     hasMessages,
     canSend,
     sendChatMessage,

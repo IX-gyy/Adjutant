@@ -17,9 +17,20 @@ export type BackendEvent =
   | { event: 'tts_started' }
   | { event: 'tts_stopped' }
   | { event: 'tts_complete' }
-  | { event: 'history_loaded'; history: Array<{ role: string; content: string }> }
+  | { event: 'history_loaded'; history: Array<{ role: string; content: string; timestamp?: number }> }
   | { event: 'history_cleared' }
   | { event: 'error'; type?: string; msg: string }
+  // 待办事项相关事件
+  | { event: 'todo_added'; todo: { id: number; content: string; created_at: string; due_date?: string; status: string } }
+  | { event: 'todo_list'; todos: Array<{ id: number; content: string; created_at: string; due_date?: string; status: string }>; filter: string }
+  | { event: 'todo_updated'; todo_id: number; status?: string; deleted?: boolean }
+  // 长期记忆相关事件
+  | { event: 'memories_list'; memories: string[] }
+  // 彩蛋相关事件
+  | { event: 'egg_triggered'; id: string; transition_text: string; display_text: string; audio_file: string }
+  | { event: 'easter_egg_status'; enabled: boolean }
+  // 状态更新事件
+  | { event: 'status_update'; current_mode: 'wake' | 'transcribe'; transcribe_substate: 'idle' | 'generating' | 'playing_tts'; tts_busy: boolean; wake_model_loaded: boolean; transcribe_model_loaded: boolean; llm_model_loaded: boolean; tts_model_loaded: boolean; history_count: number; easter_egg_enabled?: boolean; memory_enabled?: boolean }
 
 // 前端指令类型定义（发送给 backend.py）
 export type FrontendAction =
@@ -29,9 +40,18 @@ export type FrontendAction =
   | { action: 'cancel_generation' }
   | { action: 'clear_history' }
   | { action: 'get_history' }
+  | { action: 'get_status' }
   | { action: 'tts_play'; text: string }
   | { action: 'tts_stop' }
-  | { action: 'start_loading' };
+  | { action: 'start_loading' }
+  | { action: 'set_easter_egg'; enabled: boolean }
+  // 待办事项相关指令
+  | { action: 'add_todo'; content: string; due_date?: string }
+  | { action: 'list_todos'; filter?: 'today' | 'all' }
+  | { action: 'complete_todo'; todo_id: number }
+  | { action: 'delete_todo'; todo_id: number }
+  // 长期记忆相关指令
+  | { action: 'get_memories'; query?: string; after?: number; before?: number };
 
 
 

@@ -57,6 +57,15 @@
           </div>
         </div>
       </div>
+      <!-- 待办事项按钮 -->
+      <button class="control-btn todo-btn" @click="openTodoPanel" title="战术日程表">
+        <svg viewBox="0 0 24 24" width="12" height="12">
+          <path
+            fill="currentColor"
+            d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"
+          />
+        </svg>
+      </button>
       <button class="control-btn clear-history" @click="handleClearHistory" title="清除历史">
         <svg viewBox="0 0 24 24" width="12" height="12">
           <path
@@ -99,6 +108,10 @@ defineProps<Props>()
 
 const easterEggEnabled = ref(true)
 
+const emit = defineEmits<{
+  'open-todo': []
+}>()
+
 onMounted(() => {
   // 监听彩蛋状态更新
   onBackendEvent((event) => {
@@ -128,6 +141,10 @@ function minimizeWindow() {
 function closeWindow() {
   // 关闭按钮 - 隐藏到托盘（任务栏图标消失）
   hideWindow()
+}
+
+function openTodoPanel() {
+  emit('open-todo')
 }
 
 function handleClearHistory() {
@@ -264,6 +281,13 @@ function handleClearHistory() {
   background: var(--terran-warning);
   color: var(--terran-bg-primary);
   box-shadow: var(--terran-glow-warning);
+}
+
+/* 主题修改：待办按钮hover对应颜色反馈 */
+.control-btn.todo-btn:hover {
+  background: var(--terran-primary);
+  color: var(--terran-bg-primary);
+  box-shadow: var(--terran-glow-primary);
 }
 
 /* 彩蛋滑动开关样式 */

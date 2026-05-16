@@ -161,6 +161,53 @@ export interface StatusUpdateEvent extends BaseBackendEvent {
   tts_model_loaded: boolean
   history_count: number
   easter_egg_enabled?: boolean
+  memory_enabled?: boolean
+}
+
+/**
+ * 待办事项对象
+ */
+export interface TodoItem {
+  id: number
+  content: string
+  created_at: string
+  due_date?: string
+  status: 'pending' | 'completed'
+}
+
+/**
+ * 待办事项已添加事件
+ */
+export interface TodoAddedEvent extends BaseBackendEvent {
+  event: 'todo_added'
+  todo: TodoItem
+}
+
+/**
+ * 待办事项列表事件
+ */
+export interface TodoListEvent extends BaseBackendEvent {
+  event: 'todo_list'
+  todos: TodoItem[]
+  filter: string
+}
+
+/**
+ * 待办事项更新事件
+ */
+export interface TodoUpdatedEvent extends BaseBackendEvent {
+  event: 'todo_updated'
+  todo_id: number
+  status?: string
+  deleted?: boolean
+}
+
+/**
+ * 长期记忆列表事件
+ */
+export interface MemoriesListEvent extends BaseBackendEvent {
+  event: 'memories_list'
+  memories: string[]
 }
 
 /**
@@ -207,6 +254,10 @@ export type BackendEvent =
   | StatusUpdateEvent
   | EggTriggeredEvent
   | EasterEggStatusEvent
+  | TodoAddedEvent
+  | TodoListEvent
+  | TodoUpdatedEvent
+  | MemoriesListEvent
 
 // ================= 前端指令类型 =================
 
@@ -300,6 +351,49 @@ export interface SetEasterEggAction extends BaseFrontendAction {
 }
 
 /**
+ * 添加待办事项指令
+ */
+export interface AddTodoAction extends BaseFrontendAction {
+  action: 'add_todo'
+  content: string
+  due_date?: string
+}
+
+/**
+ * 获取待办事项列表指令
+ */
+export interface ListTodosAction extends BaseFrontendAction {
+  action: 'list_todos'
+  filter?: 'today' | 'all'
+}
+
+/**
+ * 完成待办事项指令
+ */
+export interface CompleteTodoAction extends BaseFrontendAction {
+  action: 'complete_todo'
+  todo_id: number
+}
+
+/**
+ * 删除待办事项指令
+ */
+export interface DeleteTodoAction extends BaseFrontendAction {
+  action: 'delete_todo'
+  todo_id: number
+}
+
+/**
+ * 获取长期记忆指令
+ */
+export interface GetMemoriesAction extends BaseFrontendAction {
+  action: 'get_memories'
+  query?: string
+  after?: number
+  before?: number
+}
+
+/**
  * 前端指令联合类型
  */
 export type FrontendAction =
@@ -314,6 +408,11 @@ export type FrontendAction =
   | TtsStopAction
   | StartLoadingAction
   | SetEasterEggAction
+  | AddTodoAction
+  | ListTodosAction
+  | CompleteTodoAction
+  | DeleteTodoAction
+  | GetMemoriesAction
 
 // ================= 对话相关类型 =================
 

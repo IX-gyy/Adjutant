@@ -29,3 +29,5 @@ frontend/backend/**
 !frontend/backend/.gitkeep
 
 dist-electron/*
+
+*.docx

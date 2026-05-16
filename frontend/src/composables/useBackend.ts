@@ -189,6 +189,58 @@ export function setEasterEggEnabled(enabled: boolean) {
   sendToBackend({ action: 'set_easter_egg', enabled })
 }
 
+// ================= 待办事项相关 API =================
+
+/**
+ * 添加待办事项
+ * @param content 待办内容
+ * @param dueDate 截止时间（可选，格式：YYYY-MM-DD HH:MM）
+ */
+export function addTodo(content: string, dueDate?: string) {
+  console.log('[useBackend] 添加待办:', content, dueDate)
+  sendToBackend({ action: 'add_todo', content, due_date: dueDate })
+}
+
+/**
+ * 获取待办事项列表
+ * @param filter 筛选条件：'today' 今天 | 'all' 全部（默认）
+ */
+export function listTodos(filter: 'today' | 'all' = 'all') {
+  console.log('[useBackend] 获取待办列表:', filter)
+  sendToBackend({ action: 'list_todos', filter })
+}
+
+/**
+ * 完成待办事项
+ * @param todoId 待办事项 ID
+ */
+export function completeTodo(todoId: number) {
+  console.log('[useBackend] 完成待办:', todoId)
+  sendToBackend({ action: 'complete_todo', todo_id: todoId })
+}
+
+/**
+ * 删除待办事项
+ * @param todoId 待办事项 ID
+ */
+export function deleteTodo(todoId: number) {
+  console.log('[useBackend] 删除待办:', todoId)
+  sendToBackend({ action: 'delete_todo', todo_id: todoId })
+}
+
+// ================= 长期记忆相关 API =================
+
+/**
+ * 查询长期记忆
+ * @param query 查询关键词（可选）
+ * @param after 起始时间戳（可选）
+ * @param before 结束时间戳（可选）
+ */
+export function getMemories(query?: string, after?: number, before?: number) {
+  console.log('[useBackend] 查询记忆:', query)
+  sendToBackend({ action: 'get_memories', query, after, before })
+}
+
 /**
  * useBackend Composable
  * 提供后端通信的基础功能
@@ -198,28 +250,33 @@ export function useBackend() {
   if (isInitialized()) {
     console.log('[useBackend] 已初始化，跳过')
     return {
-      isBackendReady,
-      backendError,
-      sendToBackend,
-      onBackendEvent,
-      onceBackendEvent,
-      setWakeMode,
-      setTranscribeMode,
-      requestHistory,
-      requestStatus,
-      clearHistory,
-      transcribeFile,
-      sendMessage,
-      cancelGeneration,
-      ttsPlay,
-      ttsStop,
-      setEasterEggEnabled,
-      showWindow,
-      hideWindow,
-      minimizeWindow,
-      getBackendPath,
-    }
+    isBackendReady,
+    backendError,
+    sendToBackend,
+    onBackendEvent,
+    onceBackendEvent,
+    setWakeMode,
+    setTranscribeMode,
+    requestHistory,
+    requestStatus,
+    clearHistory,
+    transcribeFile,
+    sendMessage,
+    cancelGeneration,
+    ttsPlay,
+    ttsStop,
+    setEasterEggEnabled,
+    addTodo,
+    listTodos,
+    completeTodo,
+    deleteTodo,
+    getMemories,
+    showWindow,
+    hideWindow,
+    minimizeWindow,
+    getBackendPath,
   }
+}
 
   console.log('[useBackend] 开始初始化')
 
@@ -275,6 +332,11 @@ export function useBackend() {
     ttsPlay,
     ttsStop,
     setEasterEggEnabled,
+    addTodo,
+    listTodos,
+    completeTodo,
+    deleteTodo,
+    getMemories,
     showWindow,
     hideWindow,
     minimizeWindow,

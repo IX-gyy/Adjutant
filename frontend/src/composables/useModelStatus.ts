@@ -11,6 +11,7 @@ export const llmModelLoaded = ref(false)
 export const ttsModelLoaded = ref(false)
 export const allModelsLoaded = ref(false)
 export const backendReady = ref(false)
+export const memoryEnabled = ref(false)
 
 // 全局加载状态（用于页面遮罩）
 export const isLoading = ref(true)
@@ -179,6 +180,7 @@ function handleBackendEvent(event: BackendEvent) {
       transcribeModelLoaded.value = event.transcribe_model_loaded
       llmModelLoaded.value = event.llm_model_loaded
       ttsModelLoaded.value = event.tts_model_loaded
+      memoryEnabled.value = event.memory_enabled ?? false
       checkAllLoaded()
       // 根据状态显示或关闭 message
       restoreLoadingMessages(
@@ -266,6 +268,7 @@ export function resetModelStatus(): void {
   ttsModelLoaded.value = false
   allModelsLoaded.value = false
   backendReady.value = false
+  memoryEnabled.value = false
   isLoading.value = true
   message.destroy()
 }
@@ -279,6 +282,7 @@ export function useModelStatus() {
     ttsModelLoaded,
     allModelsLoaded,
     backendReady,
+    memoryEnabled,
     isLoading,
     isWakeReady,
     isTranscribeReady,

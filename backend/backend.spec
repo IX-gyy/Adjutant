@@ -34,6 +34,10 @@ packages_with_data = [
     'csvw',
     'segments',
     'espeakng_loader',
+    'chromadb',
+    'openai',
+    'pydantic',
+    'httpx',
 ]
 
 all_datas = []
@@ -94,6 +98,18 @@ hiddenimports = [
     'email.mime.text',
     'email.mime.multipart',
 ]
+
+# 追加：ChromaDB 全量子模块（含 hnsw 向量索引、sqlite 元数据存储等 C 扩展）
+hiddenimports.extend(collect_submodules('chromadb'))
+
+# 追加：OpenAI 全量子模块（含 chat.completions、types、base_client 等）
+hiddenimports.extend(collect_submodules('openai'))
+
+# 建议追加：Pydantic（openai 强依赖，部分版本 PyInstaller 会漏）
+hiddenimports.extend(collect_submodules('pydantic'))
+
+# 建议追加：httpx（openai 底层 HTTP 客户端）
+hiddenimports.extend(collect_submodules('httpx'))
 
 # ────────────────── 4. PyInstaller 分析配置 ──────────────────
 a = Analysis(

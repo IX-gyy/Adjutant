@@ -12,12 +12,21 @@
       </div>
     </div>
 
+    <!-- 待办事项面板 -->
+    <TodoPanel
+      v-model:visible="todoPanelVisible"
+      v-model:currentFilter="currentFilter"
+      :todos="todos"
+      @refresh="refreshTodos"
+    />
+
     <!-- 正常内容（加载完成后完全可见） -->
     <StatusBar
       :wake-ready="isWakeReady"
       :transcribe-ready="isTranscribeReady"
       :llm-ready="isLlmReady"
       :tts-ready="isTtsReady"
+      @open-todo="openTodoPanel"
     />
 
     <div class="chat-body">
@@ -48,15 +57,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { LoadingOutlined } from '@ant-design/icons-vue'
 import StatusBar from './StatusBar.vue'
 import MessageList from './MessageList.vue'
 import InputArea from './InputArea.vue'
-import { useChat, sendChatMessage, cancelChatGeneration, inputText, isGenerating, currentResponse, messages, isTranscribing } from '../composables/useChat'
+import TodoPanel from './TodoPanel.vue'
+import { useChat, sendChatMessage, cancelChatGeneration, inputText, isGenerating, currentResponse, messages, isTranscribing, todos, currentFilter } from '../composables/useChat'
 import { useModelStatus } from '../composables/useModelStatus'  // 🆕 导入 isLoading
 import { useAudioRecord, startRecording, stopRecording, isRecording, recordingDuration, audioLevel } from '../composables/useAudioRecord'
-import { useBackend, setTranscribeMode } from '../composables/useBackend'
+import { useBackend, setTranscribeMode, listTodos } from '../composables/useBackend'
 import { useTTS, isTtsPlaying, stopTts } from '../composables/useTTS'
 
 const { isWakeReady, isTranscribeReady, isLlmReady, isTtsReady, isLoading } = useModelStatus()  // 🆕 解构 isLoading
@@ -65,6 +75,17 @@ useBackend()
 useChat()
 useAudioRecord()
 useTTS()
+
+// 待办面板状态
+const todoPanelVisible = ref(false)
+
+function openTodoPanel() {
+  todoPanelVisible.value = true
+}
+
+function refreshTodos() {
+  listTodos(currentFilter.value)
+}
 
 onMounted(() => {
   setTranscribeMode()

@@ -4,19 +4,27 @@ import json
 import threading
 import queue
 import os
+import time
+import datetime
+import sqlite3
 import numpy as np
 import sounddevice as sd
 from vosk import Model, KaldiRecognizer
 import pypinyin
 import wave
-import time
 import gc
 from llama_cpp import Llama
 
 from misaki import zh
 from kokoro_onnx import Kokoro
-# ------------------------------
 
+# 长期记忆与记忆提取
+import chromadb
+from chromadb.config import Settings as ChromaSettings
+from openai import OpenAI
+import difflib
+
+# ------------------------------
 # 保留原始流引用（防止旧 TextIOWrapper 被 GC 关闭底层管道）
 _original_stdin = sys.stdin
 _original_stdout = sys.stdout
@@ -28,7 +36,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # ================= 全局常量配置 =================
-LLM_N_CTX = 8192
+LLM_N_CTX = 16384
 LLM_N_THREADS = 8
 LLM_N_BATCH = 512
 LLM_TEMPERATURE = 0.9
@@ -46,6 +54,12 @@ SYSTEM_PROMPT = """【强制核心规则】
 
 【角色定位】
 泰伦帝国001号副官，战术+生活双料助手，称呼用户为“指挥官”，与指挥官共同居住，负责日程、饮食、健康等生活事务的战术化建议。
+
+【记忆使用规范】
+当系统消息中提供了以下记忆信息时，你必须严格遵守：
+- "关于指挥官的已知信息"：记录着指挥官本人的客观事实。当指挥官询问关于他自己的问题时，你必须据此回答，不要说你不知道。
+- "指挥官近期的关键事件"：记录指挥官个人经历的事件。当指挥提起时，你可以像朋友一样提及。
+- **关键**：这些信息是关于指挥官的，不是你（副官）的。绝不能把自己代入。例如，不能说"我今天参加了会议"，而应该说"根据记录，指挥官您今天参加了会议"。
 """
 
 WAKE_WORDS = [
@@ -93,6 +107,12 @@ TTS_CONFIG_PATH = os.path.join(BASE_DIR, "models", "kokoro-zh/config.json")
 EASTER_EGG_RULES_PATH = os.path.join(BASE_DIR, "config", "easter_egg_rules.json")
 
 HISTORY_FILE_PATH = os.path.join(DATA_DIR, "history.json")
+MEMORY_DB_PATH = os.path.join(DATA_DIR, "memory_db")
+TODO_DB_PATH = os.path.join(DATA_DIR, "todo.db")
+
+# 记忆提取配置
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "c2e92f480384470e8d972c7736337962.vT7H0BhnLRzwmHkh")
+MEMORY_EXTRACTION_INTERVAL = 1   # 每轮都提取
 
 # ================= 线程安全锁与全局状态 =================
 state_lock = threading.Lock()
@@ -128,6 +148,10 @@ llm = None
 # TTS 新实例
 tts_g2p = None
 tts_kokoro = None
+
+# 记忆与待办管理器
+memory_manager = None
+todo_manager = None
 
 chat_history = []
 
@@ -251,7 +275,6 @@ def match_easter_egg(user_input: str):
         aux_keywords = match_cfg.get("aux_keywords", [])
         min_core = match_cfg.get("min_core", 1)
         min_aux = match_cfg.get("min_aux", 1)
-
         core_hits = sum(1 for kw in core_keywords if kw in user_input)
         aux_hits = sum(1 for kw in aux_keywords if kw in user_input)
         if core_hits >= min_core and aux_hits >= min_aux:
@@ -267,7 +290,6 @@ def match_easter_egg(user_input: str):
         if hits >= min_hits:
             print(f"[EasterEgg] 简化关键词命中: {rule['id']} ({hits}/{min_hits})", file=sys.stderr)
             return rule
-
     return None
 
 # ================= 音频转写核心函数 =================
@@ -353,9 +375,320 @@ def wake_listener_thread():
             print(f"[Backend] 音频流错误: {e}", file=sys.stderr)
             time.sleep(1)
 
+# ================= 长期记忆管理器 =================
+class MemoryManager:
+    def __init__(self, db_path: str, api_key: str):
+        if not api_key:
+            print("[记忆] 未设置 ZHIPU_API_KEY，长期记忆提取功能不可用", file=sys.stderr)
+            self.enabled = False
+            self.collection = None
+            return
+        self.enabled = True
+        os.makedirs(db_path, exist_ok=True)
+        self.client = chromadb.PersistentClient(path=db_path)
+        try:
+            self.collection = self.client.get_or_create_collection(
+                name="commander_memories",
+                metadata={"hnsw:space": "cosine"}
+            )
+        except Exception:
+            # 兼容旧版本 chromadb
+            self.collection = self.client.get_or_create_collection(name="commander_memories")
+        self.zhipu_client = OpenAI(api_key=api_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
+        self.extraction_queue = []
+        self.extraction_lock = threading.Lock()
+        self.collection_lock = threading.Lock()
+        self.extraction_thread = threading.Thread(target=self._extraction_worker, daemon=True)
+        self.extraction_thread.start()
+        self.extraction_counter = 0
+        self.extraction_interval = MEMORY_EXTRACTION_INTERVAL  # 全局配置，已定义为1，可根据需要修改
+        self.force_keywords = ["记住", "别忘了", "提醒我", "记下来", "备忘", "记住这个"]
+        print("[记忆] 长期记忆管理器已就绪，后台提取线程已启动", file=sys.stderr)
+
+    def add_conversation_to_queue(self, messages: list, timestamp: float = None):
+        if not self.enabled:
+            return
+        if timestamp is None:
+            timestamp = time.time()
+        with self.extraction_lock:
+            self.extraction_queue.append((messages, timestamp)) # 存入元组
+
+    def retrieve_relevant(self, query: str, k: int = 3, after: float = None, before: float = None) -> list:
+        if not self.enabled or self.collection.count() == 0:
+            return []
+        where_filter = {}
+        if after is not None:
+            where_filter["timestamp"] = where_filter.get("timestamp", {})
+            where_filter["timestamp"]["$gte"] = after
+        if before is not None:
+            where_filter["timestamp"] = where_filter.get("timestamp", {})
+            where_filter["timestamp"]["$lte"] = before
+        with self.collection_lock:
+            try:
+                if where_filter:
+                    results = self.collection.query(query_texts=[query], n_results=k, where=where_filter)
+                else:
+                    results = self.collection.query(query_texts=[query], n_results=k)
+                memories = []
+                for i, doc in enumerate(results['documents'][0]):
+                    if results['distances'][0][i] < 1.5:
+                        memories.append(doc)
+                return memories
+            except Exception as e:
+                print(f"[记忆] 检索失败: {e}", file=sys.stderr)
+                return []
+
+    def get_all_memories(self) -> list:
+        if not self.enabled or self.collection.count() == 0:
+            return []
+        with self.collection_lock:
+            return self.collection.get()['documents']
+
+    def _extraction_worker(self):
+        while True:
+            time.sleep(5)
+            with self.extraction_lock:
+                if not self.extraction_queue:
+                    continue
+                batch = self.extraction_queue[:]
+                self.extraction_queue.clear()
+            for conv, conv_ts in batch:
+                try:
+                    memories = self._extract_memories(conv, conv_ts)
+                    for mem in memories:
+                        self._add_memory(mem, conv_ts) # 记忆存储时带上原始对话时间
+                except Exception as e:
+                    print(f"[记忆] 提取失败: {e}", file=sys.stderr)
+
+    def _extract_memories(self, conversation: list, conv_timestamp: float = None):
+        conv_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation])
+        # 格式化对话时间
+        time_context = ""
+        if conv_timestamp:
+            dt = datetime.datetime.fromtimestamp(conv_timestamp)
+            time_context = f"\n对话发生时间：{dt.strftime('%Y年%m月%d日 %H:%M')}（作为所有记忆的参考时间）"
+        system_prompt = """你是一个记忆提取器，专门服务于星际争霸泰伦帝国的AI副官。你的任务是从对话中提取**关于用户（指挥官）的关键信息**，用于长期记忆。
+{time_context}
+提取规则：
+1. 提取指挥官的重要**属性**：姓名、年龄、年级、职业、位置、喜好、计划等。格式："指挥官属性：{事实} [时间: 对话发生日期]"
+2. 提取指挥官提到的**事件**（仅限有长期参考价值的）：格式："指挥官事件：[时间] - {事件描述}"
+
+逻辑推断：
+- 对于隐含事实必须推断并明确写出。例如：
+  · "我们大三的学生参会率太低" → "指挥官属性：指挥官是大学三年级学生"
+  · "我现在只能自己跑步了" → "指挥官属性：指挥官当前的锻炼方式是跑步"
+
+过滤规则：
+- **必须忽略**：天气闲聊、纯粹情感表达、日常寒暄、副官的自我介绍/恭维回复、用户重复确认副官身份的问题。
+- **必须忽略所有待办类、提醒类内容**（例如“明天下午四点开会”），这些将由独立的任务系统处理。
+- 如果一段对话中没有任何值得长期记忆的内容，返回 {"memories": []}
+
+输出格式：严格输出JSON，只包含一个"memories"数组，每个元素是一个字符串。
+{"memories": ["指挥官属性：...", "指挥官事件：..."]}
+""".replace("{time_context}", time_context)
+        try:
+            response = self.zhipu_client.chat.completions.create(
+                model="glm-4-flash",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"对话内容：\n{conv_text}\n\n请提取其中的关键记忆。"}
+                ],
+                temperature=0.2,
+                max_tokens=500
+            )
+            raw = response.choices[0].message.content
+            json_start = raw.find('{')
+            json_end = raw.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                data = json.loads(raw[json_start:json_end])
+                return data.get("memories", [])
+            return []
+        except Exception as e:
+            print(f"[记忆] 智谱API调用出错: {e}", file=sys.stderr)
+            return []
+
+    def _add_memory(self, text: str, timestamp: float = None):
+        skip_phrases = ["天气不错", "我是您的副官", "感谢指挥官的认可"]
+        if any(p in text for p in skip_phrases):
+            return
+        if timestamp is None:
+            timestamp = time.time()
+        with self.collection_lock:
+            existing = self.collection.get()['documents']
+            if any(self._is_similar(text, m) for m in existing):
+                return
+            mem_id = f"mem_{hash(text)}_{int(timestamp)}"
+            self.collection.add(documents=[text], ids=[mem_id], metadatas=[{"timestamp": timestamp}])
+            print(f"[记忆] 已存储: {text} (时间戳 {timestamp})", file=sys.stderr)
+
+    def _is_similar(self, a: str, b: str, threshold: float = 0.8) -> bool:
+        return difflib.SequenceMatcher(None, a, b).ratio() > threshold
+
+    def should_extract(self, user_message: str) -> bool:
+        """根据计数器和用户消息中的关键词判断是否需要提取记忆"""
+        if any(kw in user_message for kw in self.force_keywords):
+            self.extraction_counter = 0   # 触发后重置计数器，避免短期内重复提取
+            return True
+        self.extraction_counter += 1
+        if self.extraction_counter >= self.extraction_interval:
+            self.extraction_counter = 0
+            return True
+        return False
+
+    def analyze_todo_only(self, user_message: str, timestamp: float = None):
+        """
+        纯 TODO 分析，不提取任何长期记忆。
+        返回 todo_action dict 或 None。
+        """
+        if not self.enabled:
+            return None
+
+        if timestamp is None:
+            timestamp = time.time()
+
+        now = datetime.datetime.fromtimestamp(timestamp)
+        current_time_str = now.strftime("%Y年%m月%d日 %H:%M")
+
+        system_prompt = f"""你是一个星际争霸泰伦帝国AI副官的行动中枢，专门处理待办事项。
+    当前时间：{current_time_str}
+
+    分析规则：
+    - 如果指挥官的发言明确要求“提醒”、“别忘了”、“记下来”、“备忘”、“提醒我”等，或者描述了一个需要未来提醒的事项，生成**添加**动作。
+    - 如果发言是在**查询**待办（如“有什么安排”、“待办列表”、“今天要做什么”），生成**列表查询**动作。
+    - 如果两者都不是，则 todo_action 为 null。
+
+    **添加动作**：需要推理出 content（完整的提醒描述）和 due_date（格式YYYY-MM-DD HH:MM，根据当前时间推算，未指定具体小时则默认为 09:00）。
+    **列表查询**：只需返回 type="list"，不需要 items。
+
+    输出格式：严格JSON，结构如下：
+    {{
+      "todo_action": {{
+        "type": "add" | "list" | null,
+        "items": [{{"content": "...", "due_date": "YYYY-MM-DD HH:MM"}}] | [],
+        "expired_ids": [1, 2] | []
+      }}
+    }}
+    注意：
+    - 如果没有TODO操作，todo_action 必须为 null。
+    - 不要在输出中包含任何记忆提取相关内容。
+    """
+
+        # 传入现有待办列表供过期检测
+        todo_list_hint = ""
+        if todo_manager:
+            todos = todo_manager.list_todos("all")
+            if todos:
+                todo_list_hint = "\n当前待办事项列表：\n" + "\n".join(
+                    [f"id={t['id']}, due={t['due_date']}, status={t['status']}, content={t['content']}" for t in todos]
+                )
+
+        try:
+            response = self.zhipu_client.chat.completions.create(
+                model="glm-4-flash",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"指挥官的发言：{user_message}\n{todo_list_hint}\n\n请分析并输出 JSON。"}
+                ],
+                temperature=0.1,
+                max_tokens=600
+            )
+            raw = response.choices[0].message.content
+            json_start = raw.find('{')
+            json_end = raw.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                data = json.loads(raw[json_start:json_end])
+                return data.get("todo_action")
+            return None
+        except Exception as e:
+            print(f"[TODO] GLM纯TODO分析失败: {e}", file=sys.stderr)
+            return None
+
+# ================= 待办事项管理器 =================
+class TodoManager:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self.lock = threading.Lock()
+        self._init_db()
+
+    def _init_db(self):
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS todos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now','localtime')),
+                    due_date TEXT,
+                    status TEXT DEFAULT 'pending'
+                )
+            """)
+            conn.commit()
+            conn.close()
+
+    def add_todo(self, content: str, due_date: str = None) -> dict:
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.execute(
+                "INSERT INTO todos (content, due_date) VALUES (?, ?)",
+                (content, due_date)
+            )
+            todo_id = cur.lastrowid
+            conn.commit()
+            row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+            conn.close()
+            return self._row_to_dict(row)
+
+    def list_todos(self, filter_type: str = "all") -> list:
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            if filter_type == "today":
+                today = datetime.date.today().isoformat()
+                rows = conn.execute(
+                    "SELECT * FROM todos WHERE date(due_date) = ? OR due_date IS NULL ORDER BY created_at DESC",
+                    (today,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM todos ORDER BY status, created_at DESC"
+                ).fetchall()
+            conn.close()
+            return [self._row_to_dict(r) for r in rows]
+
+    def complete_todo(self, todo_id: int) -> bool:
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.execute(
+                "UPDATE todos SET status = 'completed' WHERE id = ?",
+                (todo_id,)
+            )
+            updated = cur.rowcount > 0
+            conn.commit()
+            conn.close()
+            return updated
+
+    def delete_todo(self, todo_id: int) -> bool:
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+            deleted = cur.rowcount > 0
+            conn.commit()
+            conn.close()
+            return deleted
+
+    def _row_to_dict(self, row) -> dict:
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "content": row[1],
+            "created_at": row[2],
+            "due_date": row[3],
+            "status": row[4]
+        }
+
 # ================= 模型分步加载线程 =================
 def model_load_thread():
-    global wake_model, wake_rec, transcribe_model, llm, tts_g2p, tts_kokoro
+    global wake_model, wake_rec, transcribe_model, llm, tts_g2p, tts_kokoro, memory_manager, todo_manager
     try:
         print("[Backend] 正在加载唤醒/转写模型...", file=sys.stderr)
         wake_model = Model(WAKE_MODEL_PATH)
@@ -400,6 +733,20 @@ def model_load_thread():
         return
     # 加载彩蛋规则
     load_easter_egg_rules()
+    # 初始化记忆管理器
+    try:
+        memory_manager = MemoryManager(MEMORY_DB_PATH, ZHIPU_API_KEY)
+    except Exception as e:
+        print(f"[Backend] 记忆管理器初始化失败: {e}", file=sys.stderr)
+        memory_manager = None
+    # 初始化待办管理器
+    try:
+        todo_manager = TodoManager(TODO_DB_PATH)
+        print("[Backend] 待办事项管理器已就绪", file=sys.stderr)
+    except Exception as e:
+        print(f"[Backend] 待办管理器初始化失败: {e}", file=sys.stderr)
+        todo_manager = None
+
     print("[Backend] 所有模型加载完成", file=sys.stderr)
     send_msg_to_electron({"event": "full_ready"})
     load_chat_history()
@@ -408,7 +755,7 @@ def model_load_thread():
     print(f"[Backend] 播放欢迎语：{welcome_text}", file=sys.stderr)
     tts_queue.put({"type": "text", "content": welcome_text})
 
-# ================= TTS 播放线程（新实现） =================
+# ================= TTS 播放线程（保持不变） =================
 def tts_playback_thread():
     global tts_g2p, tts_kokoro, tts_busy, tts_session_active, transcribe_substate
     print("[Backend] tts_playback_thread 启动", file=sys.stderr)
@@ -445,7 +792,6 @@ def tts_playback_thread():
 
         try:
             if task["type"] == "text":
-                # 文本 TTS
                 phonemes, _ = tts_g2p(task["content"])
                 samples, sample_rate = tts_kokoro.create(
                     phonemes,
@@ -461,14 +807,12 @@ def tts_playback_thread():
                     time.sleep(0.05)
 
             elif task["type"] == "audio":
-                # 预录音频播放 (WAV)
                 file_path = os.path.join(BASE_DIR, task["file"])
                 if not os.path.exists(file_path):
                     print(f"[Backend] 彩蛋音频不存在: {file_path}", file=sys.stderr)
                     raise FileNotFoundError(f"Audio file not found: {file_path}")
 
                 with wave.open(file_path, 'rb') as wf:
-                    # 简单验证格式
                     assert wf.getnchannels() == 1, "仅支持单声道"
                     assert wf.getsampwidth() == 2, "仅支持16-bit"
                     sr = wf.getframerate()
@@ -510,9 +854,128 @@ def tts_playback_thread():
                             transcribe_substate = "idle"
                             send_msg_to_electron({"event": "tts_complete"})
 
-# ================= 对话推理线程（不变） =================
+def _format_message_for_llm(msg):
+    role_name = "指挥官" if msg["role"] == "user" else "副官"
+    if msg["role"] == "user":
+        ts = msg.get("timestamp")
+        if ts:
+            dt = datetime.datetime.fromtimestamp(ts / 1000.0)
+            time_str = dt.strftime("[%Y-%m-%d %H:%M:%S]")
+            return f"{time_str} 指挥官: {msg['content']}"
+        else:
+            return f"指挥官: {msg['content']}"
+    else:
+        # 副官消息不加时间戳
+        return f"副官: {msg['content']}"
+
+# TODO 触发关键词（可根据需要扩展）
+TODO_KEYWORDS = ["提醒", "别忘了", "记下来", "备忘", "提醒我", "待办", "计划", "有什么事情", "日程", "安排"]
+
+def _is_todo_intent(text: str) -> bool:
+    """简单关键词检测，判断是否为 TODO 类意图"""
+    return any(kw in text for kw in TODO_KEYWORDS)
+
+def handle_todo_request(user_message: str):
+    """在独立线程中处理 TODO 请求，完全绕过本地 LLM"""
+    global transcribe_substate, memory_manager, todo_manager
+
+    if not memory_manager or not memory_manager.enabled:
+        send_msg_to_electron({"event": "error", "msg": "待办功能需要智谱 API，请设置 ZHIPU_API_KEY"})
+        with state_lock:
+            transcribe_substate = "idle"
+        return
+
+    now = datetime.datetime.now()
+    current_ts = int(time.time())
+
+    # 发送第一条过渡消息（固定句式）- 独立消息，独立 TTS
+    transition_text = "正在翻阅您的行程计划，指挥官，请稍等……"
+    for char in transition_text:
+        send_msg_to_electron({"event": "chat_chunk", "content": char})
+        time.sleep(0.02)
+    send_msg_to_electron({"event": "chat_complete"})
+    tts_queue.put({"type": "text", "content": transition_text})
+
+    # 调用 GLM 统一分析
+    todo_action = memory_manager.analyze_todo_only(user_message, current_ts)
+
+    # 4. 根据分析结果处理 TODO 并构造结果文本
+    result_text = ""
+
+    if todo_action is None:
+        # GLM 判断没有 TODO 操作，但仍可能有记忆提取，此时直接跳过本流程，
+        # 但为了不让用户困惑，还是补一句角色回复。
+        result_text = "已记录，指挥官。"
+    else:
+        action_type = todo_action.get("type")
+        if action_type == "add":
+            items = todo_action.get("items", [])
+            if items and todo_manager:
+                for item in items:
+                    content = item.get("content", "")
+                    due_date = item.get("due_date")
+                    if content:
+                        todo_manager.add_todo(content, due_date)
+                if len(items) == 1:
+                    item = items[0]
+                    due = item.get("due_date")
+                    if due:
+                        # 格式化时间，让回复更自然
+                        result_text = f"已为您添加待办事项：{items[0]['content']}，时间：{due}。"
+                    else:
+                        result_text = f"已为您添加 {len(items)} 项待办，指挥官。"
+                else:
+                    result_text = f"已为您添加 {len(items)} 项待办，指挥官。"
+            else:
+                result_text = "看起来您想添加提醒，但我没能解析出具体内容，请再描述清楚一些。"
+
+        elif action_type == "list":
+            if not todo_manager:
+                result_text = "待办系统暂未就绪，指挥官。"
+            else:
+                todos = todo_manager.list_todos("all")
+                # 自动处理过期事项
+                expired_ids = todo_action.get("expired_ids", [])
+                expired_text = ""
+                if expired_ids:
+                    deleted_content = []
+                    for eid in expired_ids:
+                        # 找到对应 todo 记录内容
+                        for t in todos:
+                            if t["id"] == eid:
+                                deleted_content.append(t["content"])
+                                todo_manager.delete_todo(eid)
+                                break
+                    if deleted_content:
+                        expired_text = " 以下已过期事项已自动归档：" + "、".join(deleted_content) + "。"
+                # 重新获取有效待办
+                todos = todo_manager.list_todos("all")
+                if not todos:
+                    result_text = "您目前没有待办事项，指挥官。" + expired_text
+                else:
+                    items_str = "\n".join([f"{i+1}. {t['content']}（截止：{t['due_date'] or '无'}）" for i, t in enumerate(todos)])
+                    result_text = f"您当前的事项如下：\n{items_str}" + expired_text
+        else:
+            # 无操作，可能只是记忆提取
+            result_text = "信息已同步至帝国战术板，指挥官。"
+
+    # 4. 发送第二条结果消息（独立消息，独立 TTS）
+    for char in result_text:
+        send_msg_to_electron({"event": "chat_chunk", "content": char})
+        time.sleep(0.02)
+    send_msg_to_electron({"event": "chat_complete"})
+    tts_queue.put({"type": "text", "content": result_text})
+
+    # 设置状态为 playing_tts，让 TTS 线程发送 tts_started 事件
+    with state_lock:
+        transcribe_substate = "playing_tts"
+
+    # 6. 等待 TTS 播放完成后再恢复状态
+    # 注意：状态恢复由 TTS 线程在播放完成后自动处理
+
+# ================= 对话推理线程（升级记忆检索与提取） =================
 def chat_inference_thread():
-    global chat_history, transcribe_substate
+    global chat_history, transcribe_substate, memory_manager
     print("[Backend] chat_inference_thread 启动", file=sys.stderr)
     while not llm:
         time.sleep(0.5)
@@ -531,7 +994,42 @@ def chat_inference_thread():
             with chat_lock:
                 chat_history.append({"role": "user", "content": user_message, "timestamp": int(time.time() * 1000)})
                 truncate_chat_history()
-                messages = [{"role": "system", "content": SYSTEM_PROMPT}] + [{"role": m["role"], "content": m["content"]} for m in chat_history]
+
+            # ---- 构建增强系统提示（时间注入 + 长期记忆） ----
+            now = datetime.datetime.now()
+            current_time_str = now.strftime("%Y年%m月%d日 %A %H点%M分")
+            weekday_zh = {0: "星期一",1: "星期二",2: "星期三",3: "星期四",4: "星期五",5: "星期六",6: "星期日"}
+            current_time_str = now.strftime("%Y年%m月%d日 ") + weekday_zh[now.weekday()] + now.strftime(" %H点%M分")
+
+            augmented_system = SYSTEM_PROMPT + f"\n\n当前时间：{current_time_str}"
+
+            # 检索长期记忆
+            if memory_manager and memory_manager.enabled:
+                memories = memory_manager.retrieve_relevant(user_message)
+                if memories:
+                    attributes, events = [], []
+                    for mem in memories:
+                        if mem.startswith("指挥官属性："):
+                            attributes.append(mem.replace("指挥官属性：", ""))
+                        elif mem.startswith("指挥官事件："):
+                            events.append(mem.replace("指挥官事件：", ""))
+                        else:
+                            # 兼容旧记忆格式，也归入属性
+                            attributes.append(mem)
+                    parts = []
+                    if attributes:
+                        parts.append("【关于指挥官的已知信息】\n" + "\n".join([f"- {a}" for a in attributes]))
+                    if events:
+                        parts.append("【指挥官近期的关键事件】\n" + "\n".join([f"- {e}" for e in events]))
+                    if parts:
+                        augmented_system += "\n\n" + "\n\n".join(parts)
+
+            with chat_lock:
+                # 构建最终消息列表（仅角色和内容，不含时间戳）
+                messages = [{"role": "system", "content": augmented_system}]
+                for m in chat_history:
+                    messages.append({"role": m["role"], "content": _format_message_for_llm(m)})
+
             output = llm.create_chat_completion(
                 messages=messages,
                 stream=True,
@@ -553,10 +1051,23 @@ def chat_inference_thread():
                     send_msg_to_electron({"event": "chat_chunk", "content": content})
 
             if cancelled:
+                with chat_lock:
+                    # 从末尾找到刚加的 user 消息并移除（假设它就是最后一条）
+                    if chat_history and chat_history[-1]["role"] == "user":
+                        chat_history.pop()
+                send_msg_to_electron({"event": "chat_cancelled"})
                 continue
 
             if full_response:
                 tts_queue.put({"type": "text", "content": full_response})
+                # 将本轮对话加入记忆提取队列
+                if memory_manager and memory_manager.enabled and memory_manager.should_extract(user_message):
+                    current_ts = int(time.time())
+                    memory_manager.add_conversation_to_queue(
+                        [{"role": "user", "content": user_message},
+                        {"role": "assistant", "content": full_response}],
+                        timestamp=current_ts
+                    )
 
             with chat_lock:
                 chat_history.append({"role": "assistant", "content": full_response, "timestamp": int(time.time() * 1000)})
@@ -577,9 +1088,9 @@ def chat_inference_thread():
             cancel_generation_event.clear()
             generation_lock.release()
 
-# ================= 主线程：指令处理 =================
+# ================= 主线程：指令处理（扩展 TODO / 记忆） =================
 def main_thread():
-    global current_mode, transcribe_substate, chat_history, tts_busy, tts_session_active, easter_egg_enabled
+    global current_mode, transcribe_substate, chat_history, tts_busy, tts_session_active, easter_egg_enabled, todo_manager, memory_manager
     print("[Backend] main_thread 启动", file=sys.stderr)
     while not fatal_error_event.is_set():
         try:
@@ -593,7 +1104,7 @@ def main_thread():
             msg = json.loads(line)
             action = msg.get("action")
 
-            # 全局拦截：生成中 / TTS播放中 / 彩蛋播放中 均锁定
+            # 状态锁定检查
             with state_lock:
                 is_generating = (current_mode == "transcribe" and transcribe_substate == "generating")
                 is_playing_tts = (current_mode == "transcribe" and transcribe_substate == "playing_tts")
@@ -653,7 +1164,6 @@ def main_thread():
                     if tts_busy or transcribe_substate != "idle":
                         send_msg_to_electron({"event": "error", "msg": "正在播放语音或处理中，请稍后再试"})
                         continue
-                    # 先不立即设为 generating，可能跳去彩蛋
                 user_content = msg.get("content", "").strip()
                 if user_content:
                     user_content = user_content.encode('utf-8', errors='replace').decode('utf-8')
@@ -661,7 +1171,7 @@ def main_thread():
                     send_msg_to_electron({"event": "error", "msg": "消息内容不能为空"})
                     continue
 
-                # ---------- 彩蛋系统前置拦截 ----------
+                # 彩蛋拦截
                 egg_rule = None
                 if easter_egg_enabled and user_content.startswith(("副官", "副官，")):
                     egg_rule = match_easter_egg(user_content)
@@ -678,13 +1188,24 @@ def main_thread():
                         "display_text": egg_rule["display_text"],
                         "audio_file": egg_rule["audio_file"]
                     })
-                    # 放入播放队列：先过渡语 TTS，再彩蛋音频
                     tts_queue.put({"type": "text", "content": egg_rule["transition_text"]})
                     tts_queue.put({"type": "audio", "file": egg_rule["audio_file"]})
-                    # 注意：状态已设为 playing_egg，后续播放线程会处理完成
                     continue
 
-                # ---------- 正常 LLM 流程 ----------
+
+                # == TODO 意图拦截 ==
+                if _is_todo_intent(user_content):
+                    # 避免在生成过程中重复提交
+                    with state_lock:
+                        if transcribe_substate != "idle":
+                            send_msg_to_electron({"event": "error", "msg": "待办处理中，请稍后再试"})
+                            continue
+                        # 锁定为生成状态
+                        transcribe_substate = "generating"
+                    # 启动异步线程处理 TODO（不阻塞主线程读取指令）
+                    threading.Thread(target=handle_todo_request, args=(user_content,), daemon=True).start()
+                    # TODO 处理完全由 GLM 驱动，本地 LLM 不参与，直接跳过
+                    continue
                 if not llm:
                     send_msg_to_electron({"event": "error", "msg": "对话模型尚未加载完成"})
                     continue
@@ -694,7 +1215,7 @@ def main_thread():
 
             elif action == "cancel_generation":
                 with state_lock:
-                    if not (current_mode == "transcribe" and transcribe_substate in ("generating", "playing_egg")):
+                    if not (current_mode == "transcribe" and transcribe_substate in ("generating", "playing_egg", "playing_tts")):
                         send_msg_to_electron({"event": "error", "msg": "当前没有可取消的任务"})
                         continue
                 cancel_generation_event.set()
@@ -759,7 +1280,8 @@ def main_thread():
                         "llm_model_loaded": llm is not None,
                         "tts_model_loaded": tts_g2p is not None and tts_kokoro is not None,
                         "history_count": len(chat_history),
-                        "easter_egg_enabled": easter_egg_enabled
+                        "easter_egg_enabled": easter_egg_enabled,
+                        "memory_enabled": memory_manager is not None and memory_manager.enabled,
                     }
                 send_msg_to_electron(status)
 
@@ -778,6 +1300,66 @@ def main_thread():
                 else:
                     print("[Backend] 模型加载已启动，无需重复加载", file=sys.stderr)
 
+
+            # ---------- 新增：待办事项相关 ----------
+            elif action == "add_todo":
+                if not todo_manager:
+                    send_msg_to_electron({"event": "error", "msg": "待办事项系统未就绪"})
+                    continue
+                content = msg.get("content", "").strip()
+                if not content:
+                    send_msg_to_electron({"event": "error", "msg": "待办内容不能为空"})
+                    continue
+                due_date = msg.get("due_date") or None
+                todo = todo_manager.add_todo(content, due_date)
+                send_msg_to_electron({"event": "todo_added", "todo": todo})
+
+            elif action == "list_todos":
+                if not todo_manager:
+                    send_msg_to_electron({"event": "error", "msg": "待办事项系统未就绪"})
+                    continue
+                filter_type = msg.get("filter", "all")
+                todos = todo_manager.list_todos(filter_type)
+                send_msg_to_electron({"event": "todo_list", "todos": todos, "filter": filter_type})
+
+            elif action == "complete_todo":
+                if not todo_manager:
+                    send_msg_to_electron({"event": "error", "msg": "待办事项系统未就绪"})
+                    continue
+                todo_id = msg.get("todo_id")
+                if todo_id is None:
+                    send_msg_to_electron({"event": "error", "msg": "缺少 todo_id"})
+                    continue
+                ok = todo_manager.complete_todo(int(todo_id))
+                if ok:
+                    send_msg_to_electron({"event": "todo_updated", "todo_id": todo_id, "status": "completed"})
+                else:
+                    send_msg_to_electron({"event": "error", "msg": "待办事项不存在"})
+
+            elif action == "delete_todo":
+                if not todo_manager:
+                    send_msg_to_electron({"event": "error", "msg": "待办事项系统未就绪"})
+                    continue
+                todo_id = msg.get("todo_id")
+                if todo_id is None:
+                    send_msg_to_electron({"event": "error", "msg": "缺少 todo_id"})
+                    continue
+                ok = todo_manager.delete_todo(int(todo_id))
+                if ok:
+                    send_msg_to_electron({"event": "todo_updated", "todo_id": todo_id, "deleted": True})
+                else:
+                    send_msg_to_electron({"event": "error", "msg": "待办事项不存在"})
+
+            # ---------- 新增：长期记忆查询 ----------
+            elif action == "get_memories":
+                if not memory_manager or not memory_manager.enabled:
+                    send_msg_to_electron({"event": "error", "msg": "长期记忆系统未就绪"})
+                    continue
+                query = msg.get("query")
+                after = msg.get("after")   # 可选，unix时间戳
+                before = msg.get("before")
+                mems = memory_manager.retrieve_relevant(query or "", k=5, after=after, before=before)
+                send_msg_to_electron({"event": "memories_list", "memories": mems})
         except Exception as e:
             print(f"[Backend] 指令处理错误: {e}", file=sys.stderr)
             time.sleep(0.01)
