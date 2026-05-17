@@ -49,6 +49,8 @@ all_datas.append((os.path.join(spec_dir, 'models'), 'models'))
 all_datas.append((os.path.join(spec_dir, 'config'), 'config'))
 # 彩蛋系统新增：音频资源目录（注意拼写为 assets）
 all_datas.append((os.path.join(spec_dir, 'assets'), 'assets'))
+# MCP统一工具链：非代码资源文件（prompts下的txt模板）
+all_datas.append((os.path.join(spec_dir, 'mcp', 'prompts'), 'mcp/prompts'))
 
 # 收集以上第三方包的数据文件
 for pkg in packages_with_data:
@@ -104,6 +106,20 @@ hiddenimports.extend(collect_submodules('chromadb'))
 
 # 追加：OpenAI 全量子模块（含 chat.completions、types、base_client 等）
 hiddenimports.extend(collect_submodules('openai'))
+
+# 追加：MCP统一工具链模块
+hiddenimports.extend([
+    'mcp',
+    'mcp.mcp_manager',
+    'mcp.keyword_filter',
+    'mcp.tools',
+    'mcp.tools.todo_tool',
+    'mcp.tools.system_tool',
+    'mcp.tools.time_tool',
+])
+
+# 追加：psutil（系统状态查询依赖）
+hiddenimports.extend(collect_submodules('psutil'))
 
 # 建议追加：Pydantic（openai 强依赖，部分版本 PyInstaller 会漏）
 hiddenimports.extend(collect_submodules('pydantic'))

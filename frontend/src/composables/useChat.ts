@@ -148,6 +148,16 @@ function handleBackendEvent(event: BackendEvent) {
         }
       }
       break
+
+    case 'countdown_complete':
+      // 后端倒计时完成，在聊天中显示提示
+      messages.value.push({
+        id: generateId(),
+        role: 'assistant',
+        content: event.text,
+        timestamp: Date.now(),
+      })
+      break
   }
 }
 

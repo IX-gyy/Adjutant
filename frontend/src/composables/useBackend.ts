@@ -241,6 +241,37 @@ export function getMemories(query?: string, after?: number, before?: number) {
   sendToBackend({ action: 'get_memories', query, after, before })
 }
 
+// ================= 系统状态相关 API =================
+
+import type { SystemStatusResultEvent } from '../types'
+
+/**
+ * 获取系统状态
+ * @returns Promise<SystemStatusResultEvent['data']>
+ */
+export function getSystemStatus(): Promise<SystemStatusResultEvent['data']> {
+  console.log('[useBackend] 获取系统状态')
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('获取系统状态超时'))
+    }, 5000)
+
+    const unsubscribe = onBackendEvent((event) => {
+      if (event.event === 'system_status_result') {
+        clearTimeout(timeout)
+        unsubscribe()
+        resolve((event as SystemStatusResultEvent).data)
+      } else if (event.event === 'error') {
+        clearTimeout(timeout)
+        unsubscribe()
+        reject(new Error((event as any).msg || '获取系统状态失败'))
+      }
+    })
+
+    sendToBackend({ action: 'get_system_status' })
+  })
+}
+
 /**
  * useBackend Composable
  * 提供后端通信的基础功能

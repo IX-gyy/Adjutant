@@ -57,12 +57,12 @@
           </div>
         </div>
       </div>
-      <!-- 待办事项按钮 -->
-      <button class="control-btn todo-btn" @click="openTodoPanel" title="战术日程表">
+      <!-- 工具面板按钮 -->
+      <button class="control-btn tools-btn" @click="openToolsPanel" title="战术工具箱">
         <svg viewBox="0 0 24 24" width="12" height="12">
           <path
             fill="currentColor"
-            d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"
+            d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"
           />
         </svg>
       </button>
@@ -109,7 +109,7 @@ defineProps<Props>()
 const easterEggEnabled = ref(true)
 
 const emit = defineEmits<{
-  'open-todo': []
+  'open-tools': []
 }>()
 
 onMounted(() => {
@@ -143,8 +143,8 @@ function closeWindow() {
   hideWindow()
 }
 
-function openTodoPanel() {
-  emit('open-todo')
+function openToolsPanel() {
+  emit('open-tools')
 }
 
 function handleClearHistory() {

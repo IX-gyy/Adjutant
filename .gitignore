@@ -31,3 +31,4 @@ frontend/backend/**
 dist-electron/*
 
 *.docx
+__pycache__/

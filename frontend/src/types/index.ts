@@ -211,6 +211,29 @@ export interface MemoriesListEvent extends BaseBackendEvent {
 }
 
 /**
+ * 倒计时完成事件
+ */
+export interface CountdownCompleteEvent extends BaseBackendEvent {
+  event: 'countdown_complete'
+  duration: number
+  text: string
+}
+
+/**
+ * 系统状态结果事件
+ */
+export interface SystemStatusResultEvent extends BaseBackendEvent {
+  event: 'system_status_result'
+  data: {
+    cpu?: { usage: number; cores: number; threads: number }
+    memory?: { total_gb: number; used_gb: number; usage: number }
+    disk?: { total_gb: number; used_gb: number; usage: number }
+    battery?: { percent: number; plugged: boolean; time_left_min?: number } | null
+    network?: { status: string; ip?: string }
+  }
+}
+
+/**
  * 彩蛋触发事件
  */
 export interface EggTriggeredEvent extends BaseBackendEvent {
@@ -258,6 +281,8 @@ export type BackendEvent =
   | TodoListEvent
   | TodoUpdatedEvent
   | MemoriesListEvent
+  | CountdownCompleteEvent
+  | SystemStatusResultEvent
 
 // ================= 前端指令类型 =================
 
@@ -394,6 +419,13 @@ export interface GetMemoriesAction extends BaseFrontendAction {
 }
 
 /**
+ * 查询系统状态指令
+ */
+export interface GetSystemStatusAction extends BaseFrontendAction {
+  action: 'get_system_status'
+}
+
+/**
  * 前端指令联合类型
  */
 export type FrontendAction =
@@ -413,6 +445,7 @@ export type FrontendAction =
   | CompleteTodoAction
   | DeleteTodoAction
   | GetMemoriesAction
+  | GetSystemStatusAction
 
 // ================= 对话相关类型 =================
 

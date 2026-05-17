@@ -12,12 +12,14 @@
       </div>
     </div>
 
-    <!-- 待办事项面板 -->
-    <TodoPanel
-      v-model:visible="todoPanelVisible"
+    <!-- 工具面板 -->
+    <ToolPanel
+      ref="toolPanelRef"
+      v-model:visible="toolPanelVisible"
       v-model:currentFilter="currentFilter"
       :todos="todos"
-      @refresh="refreshTodos"
+      @refresh-todos="refreshTodos"
+      @countdown-complete="onCountdownComplete"
     />
 
     <!-- 正常内容（加载完成后完全可见） -->
@@ -26,7 +28,7 @@
       :transcribe-ready="isTranscribeReady"
       :llm-ready="isLlmReady"
       :tts-ready="isTtsReady"
-      @open-todo="openTodoPanel"
+      @open-tools="openTodoPanel"
     />
 
     <div class="chat-body">
@@ -62,7 +64,7 @@ import { LoadingOutlined } from '@ant-design/icons-vue'
 import StatusBar from './StatusBar.vue'
 import MessageList from './MessageList.vue'
 import InputArea from './InputArea.vue'
-import TodoPanel from './TodoPanel.vue'
+import ToolPanel from './ToolPanel.vue'
 import { useChat, sendChatMessage, cancelChatGeneration, inputText, isGenerating, currentResponse, messages, isTranscribing, todos, currentFilter } from '../composables/useChat'
 import { useModelStatus } from '../composables/useModelStatus'  // 🆕 导入 isLoading
 import { useAudioRecord, startRecording, stopRecording, isRecording, recordingDuration, audioLevel } from '../composables/useAudioRecord'
@@ -76,15 +78,21 @@ useChat()
 useAudioRecord()
 useTTS()
 
-// 待办面板状态
-const todoPanelVisible = ref(false)
+// 工具面板状态
+const toolPanelVisible = ref(false)
 
 function openTodoPanel() {
-  todoPanelVisible.value = true
+  toolPanelVisible.value = true
 }
 
 function refreshTodos() {
   listTodos(currentFilter.value)
+}
+
+// 倒计时完成回调
+function onCountdownComplete(duration: number, text: string) {
+  // 可以在这里添加通知或其他处理
+  console.log('[ChatWindow] 倒计时完成:', duration, text)
 }
 
 onMounted(() => {

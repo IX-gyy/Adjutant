@@ -24,6 +24,9 @@ from chromadb.config import Settings as ChromaSettings
 from openai import OpenAI
 import difflib
 
+# MCP统一工具链
+from mcp import MCPManager
+
 # ------------------------------
 # 保留原始流引用（防止旧 TextIOWrapper 被 GC 关闭底层管道）
 _original_stdin = sys.stdin
@@ -152,6 +155,7 @@ tts_kokoro = None
 # 记忆与待办管理器
 memory_manager = None
 todo_manager = None
+mcp_manager = None
 
 chat_history = []
 
@@ -688,7 +692,7 @@ class TodoManager:
 
 # ================= 模型分步加载线程 =================
 def model_load_thread():
-    global wake_model, wake_rec, transcribe_model, llm, tts_g2p, tts_kokoro, memory_manager, todo_manager
+    global wake_model, wake_rec, transcribe_model, llm, tts_g2p, tts_kokoro, memory_manager, todo_manager, mcp_manager
     try:
         print("[Backend] 正在加载唤醒/转写模型...", file=sys.stderr)
         wake_model = Model(WAKE_MODEL_PATH)
@@ -746,6 +750,35 @@ def model_load_thread():
     except Exception as e:
         print(f"[Backend] 待办管理器初始化失败: {e}", file=sys.stderr)
         todo_manager = None
+
+    # 初始化MCP统一工具链管理器
+    try:
+        zhipu = memory_manager.zhipu_client if memory_manager else None
+        if zhipu:
+
+            def get_mcp_substate():
+                return transcribe_substate
+
+            def set_mcp_substate(val):
+                global transcribe_substate
+                transcribe_substate = val
+
+            mcp_manager = MCPManager(
+                zhipu_client=zhipu,
+                todo_manager=todo_manager,
+                send_msg_fn=send_msg_to_electron,
+                tts_queue=tts_queue,
+                state_lock=state_lock,
+                get_substate=get_mcp_substate,
+                set_substate=set_mcp_substate,
+                fallback_to_llm_fn=lambda msg: chat_request_queue.put(msg)
+            )
+            print("[Backend] MCP统一工具链管理器已就绪", file=sys.stderr)
+        else:
+            print("[Backend] MCP管理器初始化跳过（无智谱客户端）", file=sys.stderr)
+    except Exception as e:
+        print(f"[Backend] MCP管理器初始化失败: {e}", file=sys.stderr)
+        mcp_manager = None
 
     print("[Backend] 所有模型加载完成", file=sys.stderr)
     send_msg_to_electron({"event": "full_ready"})
@@ -868,112 +901,13 @@ def _format_message_for_llm(msg):
         # 副官消息不加时间戳
         return f"副官: {msg['content']}"
 
-# TODO 触发关键词（可根据需要扩展）
-TODO_KEYWORDS = ["提醒", "别忘了", "记下来", "备忘", "提醒我", "待办", "计划", "有什么事情", "日程", "安排"]
+def _strip_role_prefix(text):
+    prefixes = ["副官：", "副官:", "副官 "]
+    for p in prefixes:
+        if text.startswith(p):
+            return text[len(p):]
+    return text
 
-def _is_todo_intent(text: str) -> bool:
-    """简单关键词检测，判断是否为 TODO 类意图"""
-    return any(kw in text for kw in TODO_KEYWORDS)
-
-def handle_todo_request(user_message: str):
-    """在独立线程中处理 TODO 请求，完全绕过本地 LLM"""
-    global transcribe_substate, memory_manager, todo_manager
-
-    if not memory_manager or not memory_manager.enabled:
-        send_msg_to_electron({"event": "error", "msg": "待办功能需要智谱 API，请设置 ZHIPU_API_KEY"})
-        with state_lock:
-            transcribe_substate = "idle"
-        return
-
-    now = datetime.datetime.now()
-    current_ts = int(time.time())
-
-    # 发送第一条过渡消息（固定句式）- 独立消息，独立 TTS
-    transition_text = "正在翻阅您的行程计划，指挥官，请稍等……"
-    for char in transition_text:
-        send_msg_to_electron({"event": "chat_chunk", "content": char})
-        time.sleep(0.02)
-    send_msg_to_electron({"event": "chat_complete"})
-    tts_queue.put({"type": "text", "content": transition_text})
-
-    # 调用 GLM 统一分析
-    todo_action = memory_manager.analyze_todo_only(user_message, current_ts)
-
-    # 4. 根据分析结果处理 TODO 并构造结果文本
-    result_text = ""
-
-    if todo_action is None:
-        # GLM 判断没有 TODO 操作，但仍可能有记忆提取，此时直接跳过本流程，
-        # 但为了不让用户困惑，还是补一句角色回复。
-        result_text = "已记录，指挥官。"
-    else:
-        action_type = todo_action.get("type")
-        if action_type == "add":
-            items = todo_action.get("items", [])
-            if items and todo_manager:
-                for item in items:
-                    content = item.get("content", "")
-                    due_date = item.get("due_date")
-                    if content:
-                        todo_manager.add_todo(content, due_date)
-                if len(items) == 1:
-                    item = items[0]
-                    due = item.get("due_date")
-                    if due:
-                        # 格式化时间，让回复更自然
-                        result_text = f"已为您添加待办事项：{items[0]['content']}，时间：{due}。"
-                    else:
-                        result_text = f"已为您添加 {len(items)} 项待办，指挥官。"
-                else:
-                    result_text = f"已为您添加 {len(items)} 项待办，指挥官。"
-            else:
-                result_text = "看起来您想添加提醒，但我没能解析出具体内容，请再描述清楚一些。"
-
-        elif action_type == "list":
-            if not todo_manager:
-                result_text = "待办系统暂未就绪，指挥官。"
-            else:
-                todos = todo_manager.list_todos("all")
-                # 自动处理过期事项
-                expired_ids = todo_action.get("expired_ids", [])
-                expired_text = ""
-                if expired_ids:
-                    deleted_content = []
-                    for eid in expired_ids:
-                        # 找到对应 todo 记录内容
-                        for t in todos:
-                            if t["id"] == eid:
-                                deleted_content.append(t["content"])
-                                todo_manager.delete_todo(eid)
-                                break
-                    if deleted_content:
-                        expired_text = " 以下已过期事项已自动归档：" + "、".join(deleted_content) + "。"
-                # 重新获取有效待办
-                todos = todo_manager.list_todos("all")
-                if not todos:
-                    result_text = "您目前没有待办事项，指挥官。" + expired_text
-                else:
-                    items_str = "\n".join([f"{i+1}. {t['content']}（截止：{t['due_date'] or '无'}）" for i, t in enumerate(todos)])
-                    result_text = f"您当前的事项如下：\n{items_str}" + expired_text
-        else:
-            # 无操作，可能只是记忆提取
-            result_text = "信息已同步至帝国战术板，指挥官。"
-
-    # 4. 发送第二条结果消息（独立消息，独立 TTS）
-    for char in result_text:
-        send_msg_to_electron({"event": "chat_chunk", "content": char})
-        time.sleep(0.02)
-    send_msg_to_electron({"event": "chat_complete"})
-    tts_queue.put({"type": "text", "content": result_text})
-
-    # 设置状态为 playing_tts，让 TTS 线程发送 tts_started 事件
-    with state_lock:
-        transcribe_substate = "playing_tts"
-
-    # 6. 等待 TTS 播放完成后再恢复状态
-    # 注意：状态恢复由 TTS 线程在播放完成后自动处理
-
-# ================= 对话推理线程（升级记忆检索与提取） =================
 def chat_inference_thread():
     global chat_history, transcribe_substate, memory_manager
     print("[Backend] chat_inference_thread 启动", file=sys.stderr)
@@ -1059,6 +993,7 @@ def chat_inference_thread():
                 continue
 
             if full_response:
+                full_response = _strip_role_prefix(full_response)
                 tts_queue.put({"type": "text", "content": full_response})
                 # 将本轮对话加入记忆提取队列
                 if memory_manager and memory_manager.enabled and memory_manager.should_extract(user_message):
@@ -1140,6 +1075,7 @@ def main_thread():
                         transcribe_substate = "idle"
                         stream_active.clear()
                         clear_audio_queue()
+                        cancel_tts_event.clear()
 
             elif action == "transcribe_file":
                 with state_lock:
@@ -1193,18 +1129,8 @@ def main_thread():
                     continue
 
 
-                # == TODO 意图拦截 ==
-                if _is_todo_intent(user_content):
-                    # 避免在生成过程中重复提交
-                    with state_lock:
-                        if transcribe_substate != "idle":
-                            send_msg_to_electron({"event": "error", "msg": "待办处理中，请稍后再试"})
-                            continue
-                        # 锁定为生成状态
-                        transcribe_substate = "generating"
-                    # 启动异步线程处理 TODO（不阻塞主线程读取指令）
-                    threading.Thread(target=handle_todo_request, args=(user_content,), daemon=True).start()
-                    # TODO 处理完全由 GLM 驱动，本地 LLM 不参与，直接跳过
+                # == MCP 统一工具链拦截 ==
+                if mcp_manager and mcp_manager.process(user_content):
                     continue
                 if not llm:
                     send_msg_to_electron({"event": "error", "msg": "对话模型尚未加载完成"})
@@ -1226,6 +1152,9 @@ def main_thread():
                     except queue.Empty:
                         break
                 sd.stop()
+                # 取消可能存在的倒计时
+                if mcp_manager and "time_tool" in mcp_manager.tools:
+                    mcp_manager.tools["time_tool"].cancel_countdown()
                 with state_lock:
                     tts_busy = False
                     tts_session_active = False
@@ -1240,6 +1169,9 @@ def main_thread():
                     except queue.Empty:
                         break
                 sd.stop()
+                # 取消可能存在的倒计时
+                if mcp_manager and "time_tool" in mcp_manager.tools:
+                    mcp_manager.tools["time_tool"].cancel_countdown()
                 with state_lock:
                     tts_busy = False
                     tts_session_active = False
@@ -1349,6 +1281,19 @@ def main_thread():
                     send_msg_to_electron({"event": "todo_updated", "todo_id": todo_id, "deleted": True})
                 else:
                     send_msg_to_electron({"event": "error", "msg": "待办事项不存在"})
+
+            # ---------- 新增：系统状态查询 ----------
+            elif action == "get_system_status":
+                try:
+                    from mcp.tools.system_tool import SystemTool
+                    tool = SystemTool()
+                    now = datetime.datetime.now()
+                    result = tool.execute({"sub_op": "all"}, now.strftime("%Y年%m月%d日 %H:%M"), "")
+                    data = result.get("data", {})
+                    send_msg_to_electron({"event": "system_status_result", "data": data})
+                except Exception as e:
+                    print(f"[Backend] 获取系统状态失败: {e}", file=sys.stderr)
+                    send_msg_to_electron({"event": "error", "msg": f"系统状态查询失败: {e}"})
 
             # ---------- 新增：长期记忆查询 ----------
             elif action == "get_memories":
