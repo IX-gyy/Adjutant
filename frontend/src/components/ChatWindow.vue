@@ -22,6 +22,9 @@
       @countdown-complete="onCountdownComplete"
     />
 
+    <!-- 设置面板 -->
+    <SettingsPanel v-model:visible="settingsPanelVisible" />
+
     <!-- 正常内容（加载完成后完全可见） -->
     <StatusBar
       :wake-ready="isWakeReady"
@@ -29,6 +32,7 @@
       :llm-ready="isLlmReady"
       :tts-ready="isTtsReady"
       @open-tools="openTodoPanel"
+      @open-settings="openSettingsPanel"
     />
 
     <div class="chat-body">
@@ -59,17 +63,20 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, h } from 'vue'
 import { LoadingOutlined } from '@ant-design/icons-vue'
 import StatusBar from './StatusBar.vue'
 import MessageList from './MessageList.vue'
 import InputArea from './InputArea.vue'
 import ToolPanel from './ToolPanel.vue'
+import SettingsPanel from './SettingsPanel.vue'
 import { useChat, sendChatMessage, cancelChatGeneration, inputText, isGenerating, currentResponse, messages, isTranscribing, todos, currentFilter } from '../composables/useChat'
 import { useModelStatus } from '../composables/useModelStatus'  // 🆕 导入 isLoading
 import { useAudioRecord, startRecording, stopRecording, isRecording, recordingDuration, audioLevel } from '../composables/useAudioRecord'
 import { useBackend, setTranscribeMode, listTodos } from '../composables/useBackend'
 import { useTTS, isTtsPlaying, stopTts } from '../composables/useTTS'
+import { useSettings, checkSettings } from '../composables/useSettings'
+import { notification } from 'ant-design-vue'
 
 const { isWakeReady, isTranscribeReady, isLlmReady, isTtsReady, isLoading } = useModelStatus()  // 🆕 解构 isLoading
 
@@ -77,12 +84,19 @@ useBackend()
 useChat()
 useAudioRecord()
 useTTS()
+useSettings()
 
 // 工具面板状态
 const toolPanelVisible = ref(false)
+// 设置面板状态
+const settingsPanelVisible = ref(false)
 
 function openTodoPanel() {
   toolPanelVisible.value = true
+}
+
+function openSettingsPanel() {
+  settingsPanelVisible.value = true
 }
 
 function refreshTodos() {
@@ -97,6 +111,24 @@ function onCountdownComplete(duration: number, text: string) {
 
 onMounted(() => {
   setTranscribeMode()
+
+  // 检查 API Key 设置
+  setTimeout(() => {
+    const { valid, missing } = checkSettings()
+    if (!valid) {
+      notification.warning({
+        message: 'API Key 未配置',
+        description: `请在设置中填写以下配置项：${missing.join('、')}`,
+        duration: 10,
+        btn: h('button', {
+          class: 'ant-btn ant-btn-primary ant-btn-sm',
+          onClick: () => {
+            openSettingsPanel()
+          }
+        }, '打开设置')
+      })
+    }
+  }, 2000)
 })
 </script>
 

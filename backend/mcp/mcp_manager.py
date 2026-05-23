@@ -2,12 +2,16 @@ import json
 import time
 import datetime
 import threading
+import os
 
 from .keyword_filter import KeywordFilter
 from .tools.todo_tool import TodoTool
 from .tools.system_tool import SystemTool
 from .tools.time_tool import TimeTool
+from .tools.weather_tool import WeatherTool
 
+
+QWEATHER_DEFAULT_CITY = os.environ.get("QWEATHER_DEFAULT_CITY", "北京")
 
 CLASSIFIER_PROMPT_TEMPLATE = """你是一个严格的意图分类器，只输出JSON格式，不添加任何其他内容。
 
@@ -24,6 +28,7 @@ CLASSIFIER_PROMPT_TEMPLATE = """你是一个严格的意图分类器，只输出
 4. 绝对禁止输出任何JSON以外的内容
 
 当前时间：{current_time}
+用户默认城市：{default_city}
 
 用户输入: {user_input}"""
 
@@ -31,16 +36,49 @@ TOOL_DESCRIPTIONS = {
     "todo": """1. todo: 待办事项管理
    - 子操作: add(添加), list(查询), complete(完成), delete(删除)
    - 参数: content(待办内容), due_date(截止时间, ISO格式YYYY-MM-DD HH:MM), todo_id(待办ID)""",
-    "system_status": """2. system_status: 系统状态查询
+
+    "weather": """2. weather: 天气查询
+   - 子操作: now(实时天气), today(今日预报), tomorrow(明日预报), week(多日预报), hour(逐小时预报), air(空气质量), warning(灾害预警), astronomy(天文信息), indices(生活指数)
+   - 参数:
+     * location: 城市名称，必须从用户输入中提取。如用户说"北京天气"→location=北京。如果用户没说城市，location留空""。
+     * sub_op: 子操作类型，根据以下规则精准判断
+     * indices_type: 仅indices子操作时填写（穿衣/紫外线/感冒/洗车/钓鱼/运动/晾晒/全部）
+   - 触发关键词: 天气、气温、下雨、下雪、温度、冷、热、空气质量、AQI、PM2.5、雾霾、预警、台风、暴雨、日出、日落、穿衣、紫外线、感冒、洗车等
+   - 注意：这些触发关键词（如"现在""今天""外面""几点"等）经常出现在日常对话中，仅当用户确实在询问天气相关内容时才归类为weather，否则归normal
+
+【天气子操作判断规则（优先级从高到低）】
+1. 安全优先：只要包含"预警/台风/暴雨/寒潮/大风"等极端天气词 → sub_op=warning
+2. 专项查询：包含"空气质量/AQI/PM2.5/雾霾" → sub_op=air；包含"日出/日落/月相" → sub_op=astronomy
+3. 生活决策：询问"穿什么/适合什么/要不要/容易感冒/洗车/钓鱼/晾晒/紫外线" → sub_op=indices
+4. 时间粒度：
+   - 提及"几点/下午/晚上/上午/中午/小时"等具体时段 → sub_op=hour
+   - 仅提及"现在/外面/这会儿/此刻/当前" → sub_op=now
+   - 仅提及"今天/今日" → sub_op=today
+   - 提及"明天/明日" → sub_op=tomorrow
+   - 提及"这周/本周/下周/未来几天/一周" → sub_op=week
+5. 歧义默认：仅说"天气"无任何修饰 → sub_op=now，location取默认城市
+
+【真实示例】
+- "外面冷不冷？" → {{"tool":"weather", "params":{{"sub_op":"now", "location":""}}}}
+- "北京天气怎么样" → {{"tool":"weather", "params":{{"sub_op":"today", "location":"北京"}}}}
+- "上海明天会下雨吗" → {{"tool":"weather", "params":{{"sub_op":"tomorrow", "location":"上海"}}}}
+- "今天下午几点下雨" → {{"tool":"weather", "params":{{"sub_op":"hour", "location":""}}}}
+- "深圳有没有台风预警" → {{"tool":"weather", "params":{{"sub_op":"warning", "location":"深圳"}}}}
+- "明天穿什么合适" → {{"tool":"weather", "params":{{"sub_op":"indices", "indices_type":"穿衣", "location":""}}}}
+- "北京空气质量怎么样" → {{"tool":"weather", "params":{{"sub_op":"air", "location":"北京"}}}}""",
+
+    "system_status": """3. system_status: 系统状态查询
    - 子操作: cpu, memory, disk, battery, network, all(全部)
    - 参数: sub_op(子操作类型, 默认all)""",
-    "time_tool": """3. time_tool: 时间管理工具
+
+    "time_tool": """4. time_tool: 时间管理工具
    - 子操作: current_time(当前时间), date_calc(日期计算), countdown(倒计时), stopwatch(秒表)
    - 参数: duration(倒计时时长, 分钟), target_date(目标日期, YYYY-MM-DD), stopwatch_action(start/pause/reset/status)""",
 }
 
 TRANSITION_TEXTS = {
     "todo": "正在翻阅您的行程计划，指挥官，请稍等……",
+    "weather": "正在连接星际气象卫星，指挥官，请稍等……",
     "system_status": "正在扫描帝国终端运行状态，指挥官，请稍等……",
     "time_tool": "正在校准帝国标准时间，指挥官，请稍等……",
 }
@@ -48,7 +86,8 @@ TRANSITION_TEXTS = {
 
 class MCPManager:
     def __init__(self, zhipu_client, todo_manager, send_msg_fn, tts_queue,
-                 state_lock, get_substate, set_substate, fallback_to_llm_fn=None):
+                 state_lock, get_substate, set_substate, fallback_to_llm_fn=None,
+                 default_city="北京"):
         self.zhipu_client = zhipu_client
         self.send_msg = send_msg_fn
         self.tts_queue = tts_queue
@@ -56,12 +95,14 @@ class MCPManager:
         self._get_substate = get_substate
         self._set_substate = set_substate
         self._fallback_to_llm = fallback_to_llm_fn
+        self.default_city = default_city
 
         self.keyword_filter = KeywordFilter()
 
         self.tools = {}
         if todo_manager:
             self.tools["todo"] = TodoTool(todo_manager, zhipu_client)
+        self.tools["weather"] = WeatherTool()
         self.tools["system_status"] = SystemTool()
         self.tools["time_tool"] = TimeTool(send_msg_fn, tts_queue)
 
@@ -70,7 +111,6 @@ class MCPManager:
         return self.zhipu_client is not None
 
     def process(self, user_message):
-        """快速判断是否由MCP接管。返回True表示已接管（不要走LLM），False表示应走正常LLM流程。"""
         if not self.enabled:
             return False
 
@@ -96,9 +136,11 @@ class MCPManager:
             params = {}
 
             registered = [t for t in matched_tools if t in self.tools]
-            if len(registered) == 1:
-                tool_name = registered[0]
-            elif registered:
+            if not registered:
+                self._fallback_to_llm_and_idle(user_message)
+                return
+
+            if self._needs_classifier(registered):
                 classification = self._classify(user_message, registered, current_time_str)
                 if classification is None:
                     self._fallback_to_llm_and_idle(user_message)
@@ -111,8 +153,12 @@ class MCPManager:
 
                 params = classification.get("params", {})
             else:
-                self._fallback_to_llm_and_idle(user_message)
-                return
+                tool_name = registered[0]
+                if tool_name == "weather":
+                    sub_op = self.keyword_filter.get_weather_sub_op(user_message)
+                    params["sub_op"] = sub_op
+                    if sub_op == "indices":
+                        params["indices_type"] = self.keyword_filter.get_indices_type(user_message)
 
             tool = self.tools.get(tool_name)
             if tool is None:
@@ -140,6 +186,13 @@ class MCPManager:
             print(f"[MCP] 异步处理异常: {e}")
             self._fallback_to_idle()
 
+    def _needs_classifier(self, registered):
+        if "todo" in registered:
+            return True
+        if len(registered) > 1:
+            return True
+        return False
+
     def _fallback_to_idle(self):
         with self.state_lock:
             self._set_substate("idle")
@@ -162,6 +215,7 @@ class MCPManager:
         prompt = CLASSIFIER_PROMPT_TEMPLATE.format(
             tool_descriptions=tool_descriptions,
             current_time=current_time_str,
+            default_city=self.default_city,
             user_input=user_message
         )
 
@@ -173,7 +227,7 @@ class MCPManager:
                     {"role": "user", "content": user_message}
                 ],
                 temperature=0.1,
-                max_tokens=300
+                max_tokens=400
             )
             raw = response.choices[0].message.content
             json_start = raw.find('{')

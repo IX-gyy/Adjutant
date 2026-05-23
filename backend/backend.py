@@ -114,7 +114,7 @@ MEMORY_DB_PATH = os.path.join(DATA_DIR, "memory_db")
 TODO_DB_PATH = os.path.join(DATA_DIR, "todo.db")
 
 # 记忆提取配置
-ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "c2e92f480384470e8d972c7736337962.vT7H0BhnLRzwmHkh")
+ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
 MEMORY_EXTRACTION_INTERVAL = 1   # 每轮都提取
 
 # ================= 线程安全锁与全局状态 =================
@@ -162,6 +162,14 @@ chat_history = []
 # ================= 彩蛋系统全局状态 =================
 easter_egg_enabled = True          # 彩蛋总开关，默认开启
 easter_egg_rules = []              # 从 JSON 加载的规则列表
+
+# ================= 用户设置存储 =================
+user_settings = {
+    "glm_api_key": "",
+    "qweather_api_key": "",
+    "qweather_api_host": "",
+    "default_city": "北京"
+}
 
 # ================= 工具函数 =================
 def fuzzy_match_wake_word(text):
@@ -691,6 +699,57 @@ class TodoManager:
         }
 
 # ================= 模型分步加载线程 =================
+def _reinit_glm_services(glm_api_key):
+    """当用户设置 GLM API Key 后，重新初始化 MCP 和记忆管理器"""
+    global memory_manager, mcp_manager
+    try:
+        print("[Backend] 正在用新的 GLM API Key 重新初始化记忆管理器...", file=sys.stderr)
+        memory_manager = MemoryManager(MEMORY_DB_PATH, glm_api_key)
+    except Exception as e:
+        print(f"[Backend] 记忆管理器重新初始化失败: {e}", file=sys.stderr)
+
+    try:
+        zhipu = None
+        if memory_manager and hasattr(memory_manager, 'zhipu_client'):
+            zhipu = memory_manager.zhipu_client
+        if not zhipu and glm_api_key:
+            from openai import OpenAI
+            zhipu = OpenAI(api_key=glm_api_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
+
+        if zhipu:
+            def get_mcp_substate():
+                return transcribe_substate
+
+            def set_mcp_substate(val):
+                global transcribe_substate
+                transcribe_substate = val
+
+            mcp_manager = MCPManager(
+                zhipu_client=zhipu,
+                todo_manager=todo_manager,
+                send_msg_fn=send_msg_to_electron,
+                tts_queue=tts_queue,
+                state_lock=state_lock,
+                get_substate=get_mcp_substate,
+                set_substate=set_mcp_substate,
+                fallback_to_llm_fn=lambda msg: chat_request_queue.put(msg),
+                default_city=user_settings.get("default_city", "北京")
+            )
+            # 设置天气工具的 API Key 和 Host 以及默认城市
+            if "weather" in mcp_manager.tools:
+                weather_tool = mcp_manager.tools["weather"]
+                weather_tool.set_credentials(
+                    user_settings.get("qweather_api_key", ""),
+                    user_settings.get("qweather_api_host", "")
+                )
+                weather_tool.set_default_city(user_settings.get("default_city", "北京"))
+            print("[Backend] MCP统一工具链管理器已重新初始化", file=sys.stderr)
+            send_msg_to_electron({"event": "settings_updated", "success": True, "mcp_ready": True})
+        else:
+            print("[Backend] MCP重新初始化失败：无有效智谱客户端", file=sys.stderr)
+    except Exception as e:
+        print(f"[Backend] MCP重新初始化失败: {e}", file=sys.stderr)
+
 def model_load_thread():
     global wake_model, wake_rec, transcribe_model, llm, tts_g2p, tts_kokoro, memory_manager, todo_manager, mcp_manager
     try:
@@ -739,7 +798,8 @@ def model_load_thread():
     load_easter_egg_rules()
     # 初始化记忆管理器
     try:
-        memory_manager = MemoryManager(MEMORY_DB_PATH, ZHIPU_API_KEY)
+        glm_key = user_settings.get("glm_api_key", "") or ZHIPU_API_KEY
+        memory_manager = MemoryManager(MEMORY_DB_PATH, glm_key)
     except Exception as e:
         print(f"[Backend] 记忆管理器初始化失败: {e}", file=sys.stderr)
         memory_manager = None
@@ -753,9 +813,17 @@ def model_load_thread():
 
     # 初始化MCP统一工具链管理器
     try:
-        zhipu = memory_manager.zhipu_client if memory_manager else None
-        if zhipu:
+        zhipu = None
+        # 优先使用 memory_manager 的客户端
+        if memory_manager and hasattr(memory_manager, 'zhipu_client'):
+            zhipu = memory_manager.zhipu_client
+        # 如果 memory_manager 不可用，尝试直接创建
+        glm_key = user_settings.get("glm_api_key", "") or ZHIPU_API_KEY
+        if not zhipu and glm_key:
+            from openai import OpenAI
+            zhipu = OpenAI(api_key=glm_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
 
+        if zhipu:
             def get_mcp_substate():
                 return transcribe_substate
 
@@ -771,8 +839,17 @@ def model_load_thread():
                 state_lock=state_lock,
                 get_substate=get_mcp_substate,
                 set_substate=set_mcp_substate,
-                fallback_to_llm_fn=lambda msg: chat_request_queue.put(msg)
+                fallback_to_llm_fn=lambda msg: chat_request_queue.put(msg),
+                default_city=user_settings.get("default_city", "北京")
             )
+            # 设置天气工具的 API Key 和 Host 以及默认城市
+            if "weather" in mcp_manager.tools:
+                weather_tool = mcp_manager.tools["weather"]
+                weather_tool.set_credentials(
+                    user_settings.get("qweather_api_key", ""),
+                    user_settings.get("qweather_api_host", "")
+                )
+                weather_tool.set_default_city(user_settings.get("default_city", "北京"))
             print("[Backend] MCP统一工具链管理器已就绪", file=sys.stderr)
         else:
             print("[Backend] MCP管理器初始化跳过（无智谱客户端）", file=sys.stderr)
@@ -1009,10 +1086,7 @@ def chat_inference_thread():
             save_chat_history()
             send_msg_to_electron({"event": "chat_complete"})
             with state_lock:
-                if not tts_queue.empty():
-                    transcribe_substate = "playing_tts"
-                else:
-                    transcribe_substate = "idle"
+                transcribe_substate = "playing_tts"
 
         except Exception as e:
             print(f"[Backend] 对话生成错误: {e}", file=sys.stderr)
@@ -1223,6 +1297,78 @@ def main_thread():
                 print(f"[Backend] 彩蛋开关已设置为: {easter_egg_enabled}", file=sys.stderr)
                 send_msg_to_electron({"event": "easter_egg_status", "enabled": easter_egg_enabled})
 
+            elif action == "update_settings":
+                # 更新用户设置
+                old_glm_key = user_settings.get("glm_api_key", "")
+                settings_data = msg.get("settings", {})
+                user_settings["glm_api_key"] = settings_data.get("glmApiKey", "")
+                user_settings["qweather_api_key"] = settings_data.get("qweatherApiKey", "")
+                user_settings["qweather_api_host"] = settings_data.get("qweatherApiHost", "")
+                user_settings["default_city"] = settings_data.get("defaultCity", "北京")
+                print(f"[Backend] 用户设置已更新", file=sys.stderr)
+
+                # 更新 MCP 天气工具的凭据和默认城市
+                if mcp_manager and "weather" in mcp_manager.tools:
+                    weather_tool = mcp_manager.tools["weather"]
+                    weather_tool.set_credentials(
+                        user_settings["qweather_api_key"],
+                        user_settings["qweather_api_host"]
+                    )
+                    weather_tool.set_default_city(user_settings["default_city"])
+
+                # 更新 MCP 管理器自身的默认城市（用于分类器）
+                if mcp_manager:
+                    mcp_manager.default_city = user_settings["default_city"]
+
+                # 如果 GLM API Key 从空变为有值，重新初始化 MCP 和记忆管理器
+                new_glm_key = user_settings["glm_api_key"]
+                if new_glm_key and not old_glm_key:
+                    threading.Thread(target=_reinit_glm_services, args=(new_glm_key,), daemon=True).start()
+
+                send_msg_to_electron({"event": "settings_updated", "success": True})
+
+            elif action == "test_glm_key":
+                # 测试 GLM API Key 是否有效
+                api_key = msg.get("api_key", "")
+                if not api_key:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "glm", "success": False, "message": "API Key 不能为空"})
+                    continue
+                try:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=api_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
+                    resp = client.chat.completions.create(
+                        model="glm-4-flash",
+                        messages=[{"role": "user", "content": "hi"}],
+                        max_tokens=5
+                    )
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "glm", "success": True, "message": "GLM API Key 验证成功"})
+                except Exception as e:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "glm", "success": False, "message": f"GLM API Key 验证失败: {e}"})
+
+            elif action == "test_qweather_key":
+                # 测试和风天气 API Key 和 Host 是否有效
+                api_key = msg.get("api_key", "")
+                api_host = msg.get("api_host", "")
+                if not api_key:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "qweather", "success": False, "message": "和风天气 API Key 不能为空"})
+                    continue
+                if not api_host:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "qweather", "success": False, "message": "和风天气 API Host 不能为空"})
+                    continue
+                try:
+                    import requests as req_lib
+                    # 使用北京的城市ID测试，和风天气需要 location ID 而非中文名
+                    test_url = f"https://{api_host}/v7/weather/now?location=101010100"
+                    resp = req_lib.get(test_url, params={"key": api_key}, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if data.get("code") == "200":
+                        send_msg_to_electron({"event": "api_key_test_result", "type": "qweather", "success": True, "message": "和风天气 API Key 验证成功"})
+                    else:
+                        send_msg_to_electron({"event": "api_key_test_result", "type": "qweather", "success": False, "message": f"和风天气 API 返回错误: code={data.get('code')}"})
+                except Exception as e:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "qweather", "success": False, "message": f"和风天气 API 验证失败: {e}"})
+
             elif action == "start_loading":
                 global model_loading_started
                 if not model_loading_started:
@@ -1294,6 +1440,49 @@ def main_thread():
                 except Exception as e:
                     print(f"[Backend] 获取系统状态失败: {e}", file=sys.stderr)
                     send_msg_to_electron({"event": "error", "msg": f"系统状态查询失败: {e}"})
+
+            # ---------- 新增：天气查询 ----------
+            elif action == "query_weather":
+                try:
+                    from mcp.tools.weather_tool import WeatherTool
+                    tool = WeatherTool()
+                    now = datetime.datetime.now()
+                    location = msg.get("location", "")
+                    sub_ops = msg.get("sub_ops", ["now"])
+
+                    # 如果没有指定城市，使用用户设置的默认城市
+                    if not location:
+                        location = user_settings.get("default_city", "北京")
+
+                    # 使用用户设置的 API Key 和 Host
+                    qweather_api_key = user_settings.get("qweather_api_key", "")
+                    qweather_api_host = user_settings.get("qweather_api_host", "")
+
+                    results = []
+                    for sub_op in sub_ops:
+                        result = tool.execute(
+                            {"location": location, "sub_op": sub_op},
+                            now.strftime("%Y年%m月%d日 %H:%M"),
+                            "",
+                            api_key=qweather_api_key,
+                            api_host=qweather_api_host
+                        )
+                        results.append({
+                            "sub_op": sub_op,
+                            "data": result.get("data", {}),
+                            "result_text": result.get("result_text", "")
+                        })
+
+                    send_msg_to_electron({
+                        "event": "weather_result",
+                        "data": {
+                            "location": location,
+                            "results": results
+                        }
+                    })
+                except Exception as e:
+                    print(f"[Backend] 天气查询失败: {e}", file=sys.stderr)
+                    send_msg_to_electron({"event": "weather_result", "error": str(e)})
 
             # ---------- 新增：长期记忆查询 ----------
             elif action == "get_memories":

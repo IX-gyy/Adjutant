@@ -323,6 +323,11 @@
             <span>刷新状态</span>
           </button>
         </div>
+
+        <!-- 天气查询工具 -->
+        <div v-if="currentTool === 'weather'" class="tool-section weather-section">
+          <WeatherPanel :visible="currentTool === 'weather'" />
+        </div>
       </div>
     </div>
   </div>
@@ -331,6 +336,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { listTodos, addTodo, completeTodo, deleteTodo, getSystemStatus } from '../composables/useBackend'
+import WeatherPanel from './WeatherPanel.vue'
 import type { TodoItem, SystemStatusResultEvent } from '../types'
 
 interface Props {
@@ -359,6 +365,11 @@ const tools = [
     id: 'pomodoro',
     name: '番茄钟',
     icon: 'M15 1H9v2h6V1zm-4 13h2V8h-2v6zm8.03-6.61l1.42-1.42c-.43-.51-.9-.99-1.41-1.41l-1.42 1.42C16.07 4.74 14.12 4 12 4c-4.97 0-9 4.03-9 9s4.02 9 9 9 9-4.03 9-9c0-2.12-.74-4.07-1.97-5.61zM12 20c-3.87 0-7-3.13-7-7s3.13-7 7-7 7 3.13 7 7-3.13 7-7 7z'
+  },
+  {
+    id: 'weather',
+    name: '天气查询',
+    icon: 'M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z'
   },
   {
     id: 'system',

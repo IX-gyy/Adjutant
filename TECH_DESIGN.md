@@ -14,6 +14,7 @@
    - **时间感知**：注入系统时间，理解相对时间表述（“今天”“明天”），记忆附带时间元数据。
 4. **语音合成（TTS）**：基于 Kokoro-82M 模型，AI 回复同时自动播报，支持手动停止/重新播报；
 5. **纯 CPU 运行**：无需独立 GPU，适配普通办公电脑。
+6. **设置与 API Key 管理**：用户可在设置面板中输入和管理 API Key（GLM API Key、和风天气 API Key 及 API Host），设置本地持久化存储，缺失时给出警告提示。
 
 ## 技术栈
 
@@ -44,12 +45,15 @@ frontend/
 │   │   ├── MessageList.vue
 │   │   ├── InputArea.vue
 │   │   ├── VoiceButton.vue
+│   │   ├── WeatherPanel.vue    # 天气查询面板
+│   │   ├── SettingsPanel.vue   # 设置面板（API Key 管理）
 │   │   ├── TodoPanel.vue       # 待办事项面板（计划）
 │   │   └── StatusBar.vue
 │   ├── composables/     # 组合式函数
 │   │   ├── useBackend.ts
 │   │   ├── useChat.ts
-│   │   └── useTTS.ts
+│   │   ├── useTTS.ts
+│   │   └── useSettings.ts      # 设置管理（含本地存储）
 │   ├── stores/          # Pinia 状态管理
 │   ├── types/           # TypeScript 类型定义
 │   └── styles/          # 样式文件
@@ -159,6 +163,9 @@ audio_queue, chat_request_queue, tts_request_queue
 | **get_memories**  | query?: str                  | 查询长期记忆（可选关键词）       |
 | set_easter_egg    | enabled: boolean             | 设置彩蛋开关                     |
 | get_status        | -                            | 获取系统状态                     |
+| **save_settings** | settings: object             | 保存设置（API Key、城市等）     |
+| **test_glm_key**  | api_key: string              | 测试 GLM API Key 是否有效      |
+| **test_qweather_key** | api_key: string, api_host: string | 测试和风天气 API Key 和 Host |
 
 ### 后端 → 前端（事件）
 
@@ -188,6 +195,7 @@ audio_queue, chat_request_queue, tts_request_queue
 | egg_triggered           | id, transition_text, display_text, audio_file | 彩蛋触发       |
 | easter_egg_status       | enabled: boolean                  | 彩蛋开关状态更新           |
 | **memory_extraction_status** | status: "idle" \| "processing" | 记忆提取后台状态（可选） |
+| **api_key_test_result** | type: "glm" \| "qweather", success: boolean, message: str | API Key 测试结果 |
 
 ## 彩蛋系统
 
@@ -337,11 +345,218 @@ CREATE TABLE todos (
 
 ---
 
+## 统一MCP工具链架构设计
+
+### 一、核心架构总览
+
+采用"**本地快速预过滤+GLM精准分类**"两级架构，兼顾响应速度和准确性，最小化GLM调用次数。所有功能共享同一套分类、路由、状态管理和通信机制。
+
+#### 1. 统一处理流程
+```
+用户输入 → 【MCP总开关检查】→ 【本地关键词预过滤】→ 【GLM意图分类器】
+           ↓（命中MCP）                              ↓（未命中）
+    【MCP任务分发器】→ 对应工具处理函数          进入本地LLM正常对话流程
+           ↓
+    【GLM结果生成器】→ 固定格式回复
+           ↓
+    【前端推送+TTS播报】→ 切换回idle状态
+```
+
+#### 2. 核心设计原则
+- **本地零智能**：所有意图判断、参数解析、结果生成100%由GLM-4-Flash完成，后端仅执行"原子操作"
+- **记忆完全隔离**：所有MCP相关对话**不写入短期记忆、不送入长期记忆提取队列、本地模型完全不可见**
+- **状态机复用**：所有MCP任务都在`transcribe_substate = "generating"`状态下执行，复用现有锁、取消事件和队列机制
+- **统一错误处理**：所有工具的错误返回标准化格式，由GLM统一生成用户友好的错误提示
+- **可插拔扩展**：新增工具只需添加关键词规则、处理函数和GLM Prompt，无需修改核心架构
+
+### 二、本地关键词预过滤
+
+在Python后端维护静态关键词字典，用户输入先经过此过滤，只有命中关键词的才会进入GLM分类阶段。
+
+```python
+# 本地关键词预过滤字典
+MCP_KEYWORDS = {
+    "todo": ["提醒", "待办", "任务", "安排", "别忘了", "要做的事"],
+    "weather": ["天气", "气温", "下雨", "下雪", "晴天", "阴天", "温度", "风", "冷", "热", "穿什么", "穿衣"],
+    "system_status": ["电脑", "系统", "CPU", "内存", "磁盘", "电量", "网络", "卡", "慢"],
+    "time_tool": ["时间", "几点", "日期", "几号", "星期", "倒计时", "计时", "还有多少天"],
+    "web_search": ["查一下", "搜索", "找资料", "最新消息", "新闻", "百科", "怎么回事"]
+}
+```
+
+天气子操作关键词（在keyword_filter.py中实现）:
+```python
+# weather子操作关键词映射
+"weather": {
+    "sub_ops": {
+        "now": ["实时", "现在", "当前", "此刻", "外面", "这会儿"],
+        "today": ["今天", "今日", "今天全天"],
+        "tomorrow": ["明天", "明日", "明天白天"],
+        "week": ["这周", "本周", "下周", "未来三天", "未来几天", "一周"],
+        "hour": ["几点", "下午", "晚上", "上午", "中午", "小时", "时段"],
+        "air": ["空气质量", "PM2.5", "PM10", "AQI", "雾霾", "空气指数", "污染"],
+        "warning": ["预警", "台风", "暴雨", "大风", "寒潮", "高温", "雷电", "冰雹"],
+        "astronomy": ["日出", "日落", "月相", "月出", "月落", "月亮"],
+        "indices": ["穿衣", "紫外线", "感冒", "洗车", "钓鱼", "运动", "晾晒", "生活指数"]
+    }
+}
+```
+
+### 三、GLM意图分类器
+
+对于命中关键词或多意图的输入，调用GLM-4-Flash进行最终意图分类和参数提取。
+
+```prompt
+# 泰伦帝国副官MCP意图分类器 v1.0
+你是一个严格的意图分类器，只输出JSON格式，不添加任何其他内容。
+
+## 工具类别及参数说明
+1. todo: 待办事项管理
+   - 子操作: add(添加), list(查询), complete(完成), delete(删除)
+2. weather: 天气查询
+   - 子操作: now/today/tomorrow/week/hour/air/warning/astronomy/indices
+   - 参数: location, indices_type, time_range
+3. system_status: 系统状态查询
+4. time_tool: 时间工具
+5. web_search: 网页搜索
+6. normal: 正常对话
+
+用户输入: {user_input}
+```
+
+### 四、MCP任务分发器
+
+根据GLM分类结果，将任务分发到对应的工具处理函数：
+
+| 工具类别 | 处理函数 | 数据源 |
+|----------|----------|--------|
+| todo | todo_handler.add_todo/list_todos | SQLite本地数据库 |
+| weather | weather_tool.query_weather | 和风天气QWeather API |
+| system_status | system_tool.get_status | psutil库 |
+| time_tool | time_tool.get_current_time/countdown | 系统时间 |
+| web_search | web_search_tool.search | 搜索引擎API |
+
+---
+
+## 天气查询系统详细设计
+
+### 一、用户场景分类与子操作映射
+
+采用"**语义场景+时间维度+信息类型**"三维度判断体系：
+
+| 场景大类 | 典型用户话术 | 映射子操作 | 优先级 |
+|----------|--------------|------------|--------|
+| 即时状态感知 | "外面冷不冷？""现在热吗？" | now | 最高 |
+| 当日完整预报 | "今天天气怎么样？" | today | 高 |
+| 次日预报 | "明天会下雨吗？" | tomorrow | 高 |
+| 多日趋势预报 | "这周天气怎么样？" | week | 中 |
+| 小时级精准预报 | "今天下午几点下雨？" | hour | 中 |
+| 空气质量专项 | "今天空气质量怎么样？" | air | 中 |
+| 灾害预警查询 | "有没有台风预警？" | warning | 高（安全优先） |
+| 天文信息查询 | "今天几点日出？" | astronomy | 低 |
+| 生活决策辅助 | "今天适合洗车吗？""穿什么？" | indices | 高 |
+
+### 二、和风天气API映射
+
+| 子操作 | API接口 | 核心字段 | 缓存时间 |
+|--------|---------|----------|----------|
+| now | v7/weather/now | temp, text, windDir, windScale, humidity | 10分钟 |
+| today/tomorrow | v7/weather/3d | tempMin, tempMax, textDay, textNight | 1小时 |
+| week | v7/weather/7d | 每日tempMin, tempMax, textDay | 6小时 |
+| hour | v7/weather/24h | 未来24小时temp, text, time | 30分钟 |
+| air | v7/air/now | aqi, category, pm2p5, pm10 | 30分钟 |
+| warning | v7/warning/now | title, level, text | 5分钟 |
+| astronomy | v7/astronomy/sun | sunrise, sunset | 24小时 |
+| indices | v7/indices/1d | typeName, level, text | 6小时 |
+
+### 三、生活指数细化方案
+
+#### 1. indices_type提取逻辑
+
+| 用户输入关键词 | 映射的indices_type |
+|---------------|-------------------|
+| 穿什么、穿衣、外套、穿衣服 | 穿衣 |
+| 紫外线、防晒 | 紫外线 |
+| 感冒、容易生病、着凉 | 感冒 |
+| 洗车 | 洗车 |
+| 钓鱼 | 钓鱼 |
+| 运动、锻炼、跑步、健身 | 运动 |
+| 晾晒、晒被子、晒衣服 | 晾晒 |
+| 旅游、出行、出去玩 | 旅游 |
+| 无以上关键词 | 全部 |
+
+#### 2. 分级返回策略
+
+- **具体类型**（如"穿衣"、"洗车"）：只返回该指数单条结果，TTS约3秒
+  - 格式：【{location}今日{indices_type}指数】+ 等级 + 建议
+
+- **全部**（仅用户泛问"生活指数"时触发）：返回穿衣+紫外线+感冒三个最常用指数摘要，TTS约8秒
+
+### 四、副官风格回复模板
+
+| 子操作 | 回复格式 |
+|--------|----------|
+| now | 【{location}实时天气】天气：{text} 气温：{temp}℃ 风向：{windDir} {windScale}级 湿度：{humidity}% |
+| today | 【{location}今日预报】白天：{textDay}，{tempMax}℃ 夜间：{textNight}，{tempMin}℃ |
+| air | 【{location}实时空气质量】AQI：{aqi}（{category}）PM2.5：{pm2p5}μg/m³ |
+| warning | ⚠️【{location}灾害预警】预警类型：{title} 预警等级：{level} |
+| indices | 【{location}今日{indices_type}指数】等级：{category} 建议：{text} |
+
+### 五、异常处理
+
+| 场景 | 处理方式 |
+|------|----------|
+| API调用失败 | "指挥官，天气服务暂时不可用，请稍后再试。" |
+| 地点不存在 | "指挥官，未查询到{location}的天气信息，请确认地点名称是否正确。" |
+| 无预警信息 | "指挥官，{location}当前无任何灾害预警。" |
+| 缓存命中 | "指挥官，这是最新的天气信息。" |
+
+---
+
+## 设置与 API Key 管理
+
+### 功能概述
+设置面板用于集中管理应用的敏感配置信息，包括 API Key 等，确保这些信息不再硬编码在后端代码中，而是由用户自行输入并本地持久化存储。
+
+### 管理项
+
+| 配置项 | 说明 | 必填 | 用途 |
+|--------|------|------|------|
+| GLM API Key | 智谱 GLM-4-Flash API 密钥 | 是 | AI 对话、记忆提取、TODO 处理 |
+| 和风天气 API Key | 和风天气 API 密钥 | 是 | 天气查询功能 |
+| 和风天气 API Host | 和风天气 API 域名 | 是 | 天气查询功能 |
+| 默认城市 | 天气查询默认城市 | 否 | AI 天气查询及面板默认展示 |
+
+### 持久化机制
+- 前端使用 `localStorage` 本地存储设置数据
+- 应用启动时自动加载本地设置并同步到后端
+- 设置变更后立即保存并推送到后端
+
+### API Key 测试功能
+- 在设置面板中为 GLM 和和风天气分别提供测试按钮
+- 测试结果通过 `api_key_test_result` 事件返回前端
+- 测试通过后才允许保存设置
+
+### 缺失值处理
+- 应用启动时检查各项必填配置
+- 若存在缺失，通过警告提示用户前往设置补充
+- AI 对话和天气查询功能会根据缺失的 Key 返回对应提示
+
+### 前后端同步
+```
+前端 (useSettings.ts) ←→ 后端 (backend.py)
+     ↓                        ↓
+  localStorage           全局状态
+```
+
+---
+
 ## 版本渐进路线
 
 - **v1.0**：基础语音交互 + 短期记忆（已完成）。
 - **v2.0**：混合长期记忆 + 基础时间感知。
 - **v2.1**：结构化 TODO 系统 + 记忆时间范围检索 + 前端 TODO 面板。
+- **v2.2**：统一MCP架构 + 天气查询系统 + 系统状态查询 + 时间工具 + **API Key 本地管理（设置面板）**。
 - **v2.3**：周期性提醒、自我反思记忆、工具调用扩展。
 
 ---

@@ -283,6 +283,9 @@ export type BackendEvent =
   | MemoriesListEvent
   | CountdownCompleteEvent
   | SystemStatusResultEvent
+  | WeatherResultEvent
+  | SettingsUpdatedEvent
+  | ApiKeyTestResultEvent
 
 // ================= 前端指令类型 =================
 
@@ -426,6 +429,79 @@ export interface GetSystemStatusAction extends BaseFrontendAction {
 }
 
 /**
+ * 查询天气指令
+ */
+export interface QueryWeatherAction extends BaseFrontendAction {
+  action: 'query_weather'
+  location?: string
+  sub_ops?: string[]
+}
+
+/**
+ * 更新设置指令
+ */
+export interface UpdateSettingsAction extends BaseFrontendAction {
+  action: 'update_settings'
+  settings: {
+    glmApiKey?: string
+    qweatherApiKey?: string
+    qweatherApiHost?: string
+    defaultCity?: string
+  }
+}
+
+/**
+ * 天气查询结果事件
+ */
+export interface WeatherResultEvent extends BaseBackendEvent {
+  event: 'weather_result'
+  data?: {
+    location: string
+    results: Array<{
+      sub_op: string
+      data: any
+      result_text: string
+    }>
+  }
+  error?: string
+}
+
+/**
+ * 设置更新结果事件
+ */
+export interface SettingsUpdatedEvent extends BaseBackendEvent {
+  event: 'settings_updated'
+  success: boolean
+}
+
+/**
+ * 测试 GLM API Key 指令
+ */
+export interface TestGlmKeyAction extends BaseFrontendAction {
+  action: 'test_glm_key'
+  api_key: string
+}
+
+/**
+ * 测试和风天气 API Key 指令
+ */
+export interface TestQweatherKeyAction extends BaseFrontendAction {
+  action: 'test_qweather_key'
+  api_key: string
+  api_host: string
+}
+
+/**
+ * API Key 测试结果事件
+ */
+export interface ApiKeyTestResultEvent extends BaseBackendEvent {
+  event: 'api_key_test_result'
+  type: 'glm' | 'qweather'
+  success: boolean
+  message: string
+}
+
+/**
  * 前端指令联合类型
  */
 export type FrontendAction =
@@ -446,6 +522,10 @@ export type FrontendAction =
   | DeleteTodoAction
   | GetMemoriesAction
   | GetSystemStatusAction
+  | QueryWeatherAction
+  | UpdateSettingsAction
+  | TestGlmKeyAction
+  | TestQweatherKeyAction
 
 // ================= 对话相关类型 =================
 

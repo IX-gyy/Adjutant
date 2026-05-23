@@ -114,6 +114,7 @@ hiddenimports.extend([
     'mcp.keyword_filter',
     'mcp.tools',
     'mcp.tools.todo_tool',
+    'mcp.tools.weather_tool',
     'mcp.tools.system_tool',
     'mcp.tools.time_tool',
 ])
