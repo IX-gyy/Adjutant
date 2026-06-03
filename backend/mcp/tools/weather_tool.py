@@ -391,7 +391,9 @@ class WeatherTool:
         lines = [f"【{location_name}逐小时预报】"]
         rain_hours = []
         for hour in hourly_list[:12]:
-            fx_time = hour.get("fxTime", "?")[-8:-3]
+            fx_time = hour.get("fxTime", "?")
+            if fx_time != "?" and len(fx_time) >= 16:
+                fx_time = fx_time[11:16]
             temp = hour.get("temp", "?")
             text = hour.get("text", "?")
             lines.append(f"{fx_time} {text} {temp}℃")

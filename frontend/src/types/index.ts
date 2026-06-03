@@ -446,6 +446,7 @@ export interface UpdateSettingsAction extends BaseFrontendAction {
     glmApiKey?: string
     qweatherApiKey?: string
     qweatherApiHost?: string
+    qianfanApiKey?: string
     defaultCity?: string
   }
 }
@@ -492,11 +493,19 @@ export interface TestQweatherKeyAction extends BaseFrontendAction {
 }
 
 /**
+ * 测试百度千帆 API Key 指令
+ */
+export interface TestQianfanKeyAction extends BaseFrontendAction {
+  action: 'test_qianfan_key'
+  api_key: string
+}
+
+/**
  * API Key 测试结果事件
  */
 export interface ApiKeyTestResultEvent extends BaseBackendEvent {
   event: 'api_key_test_result'
-  type: 'glm' | 'qweather'
+  type: 'glm' | 'qweather' | 'qianfan'
   success: boolean
   message: string
 }
@@ -526,6 +535,7 @@ export type FrontendAction =
   | UpdateSettingsAction
   | TestGlmKeyAction
   | TestQweatherKeyAction
+  | TestQianfanKeyAction
 
 // ================= 对话相关类型 =================
 

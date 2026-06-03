@@ -117,6 +117,7 @@ hiddenimports.extend([
     'mcp.tools.weather_tool',
     'mcp.tools.system_tool',
     'mcp.tools.time_tool',
+    'mcp.tools.web_search_tool',
 ])
 
 # 追加：psutil（系统状态查询依赖）

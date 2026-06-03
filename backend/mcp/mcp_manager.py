@@ -9,6 +9,7 @@ from .tools.todo_tool import TodoTool
 from .tools.system_tool import SystemTool
 from .tools.time_tool import TimeTool
 from .tools.weather_tool import WeatherTool
+from .tools.web_search_tool import WebSearchTool
 
 
 QWEATHER_DEFAULT_CITY = os.environ.get("QWEATHER_DEFAULT_CITY", "北京")
@@ -21,12 +22,25 @@ CLASSIFIER_PROMPT_TEMPLATE = """你是一个严格的意图分类器，只输出
 ## 工具类别及参数说明
 {tool_descriptions}
 
+## 核心判断标准
+✅ 归为工具：用户明确要求执行某个操作
+❌ 归为normal：只是闲聊、抱怨、陈述事实
+示例：
+- ✅ "今天天气怎么样？" → weather
+- ❌ "今天天气不错" → normal
+- ✅ "提醒我明天开会" → todo
+- ❌ "我明天要开会" → normal
+
+## 上下文参考
+{context}
+
 ## 规则
 1. 严格按照上述类别分类，不得新增类别
 2. 若参数不明确，在params中注明"missing": ["参数名"]
 3. 若用户同时请求多个操作，对于todo工具返回第一个最明确的操作；对于其他工具按优先级处理
 4. 绝对禁止输出任何JSON以外的内容
 
+匹配到的工具关键词：{matched_keywords}
 当前时间：{current_time}
 用户默认城市：{default_city}
 
@@ -74,6 +88,11 @@ TOOL_DESCRIPTIONS = {
     "time_tool": """4. time_tool: 时间管理工具
    - 子操作: current_time(当前时间), date_calc(日期计算), countdown(倒计时), stopwatch(秒表)
    - 参数: duration(倒计时时长, 分钟), target_date(目标日期, YYYY-MM-DD), stopwatch_action(start/pause/reset/status)""",
+
+    "web_search": """5. web_search: 网络搜索查询
+   - 说明：通过百度千帆智能搜索查询实时信息
+   - 参数：无特殊参数，直接使用用户输入作为查询内容
+   - 触发规则：用户明确要求搜索、查询、查找信息时触发""",
 }
 
 TRANSITION_TEXTS = {
@@ -81,13 +100,14 @@ TRANSITION_TEXTS = {
     "weather": "正在连接星际气象卫星，指挥官，请稍等……",
     "system_status": "正在扫描帝国终端运行状态，指挥官，请稍等……",
     "time_tool": "正在校准帝国标准时间，指挥官，请稍等……",
+    "web_search": "正在连接星际情报网络，指挥官，请稍等……",
 }
 
 
 class MCPManager:
     def __init__(self, zhipu_client, todo_manager, send_msg_fn, tts_queue,
                  state_lock, get_substate, set_substate, fallback_to_llm_fn=None,
-                 default_city="北京"):
+                 default_city="北京", cancel_event=None):
         self.zhipu_client = zhipu_client
         self.send_msg = send_msg_fn
         self.tts_queue = tts_queue
@@ -96,6 +116,7 @@ class MCPManager:
         self._set_substate = set_substate
         self._fallback_to_llm = fallback_to_llm_fn
         self.default_city = default_city
+        self.cancel_event = cancel_event
 
         self.keyword_filter = KeywordFilter()
 
@@ -105,12 +126,13 @@ class MCPManager:
         self.tools["weather"] = WeatherTool()
         self.tools["system_status"] = SystemTool()
         self.tools["time_tool"] = TimeTool(send_msg_fn, tts_queue)
+        self.tools["web_search"] = WebSearchTool(zhipu_client)
 
     @property
     def enabled(self):
         return self.zhipu_client is not None
 
-    def process(self, user_message):
+    def process(self, user_message, chat_history=None):
         if not self.enabled:
             return False
 
@@ -124,10 +146,10 @@ class MCPManager:
                 return True
             self._set_substate("generating")
 
-        threading.Thread(target=self._process_async, args=(user_message, matched_tools), daemon=True).start()
+        threading.Thread(target=self._process_async, args=(user_message, matched_tools, chat_history), daemon=True).start()
         return True
 
-    def _process_async(self, user_message, matched_tools):
+    def _process_async(self, user_message, matched_tools, chat_history=None):
         try:
             now = datetime.datetime.now()
             current_time_str = now.strftime("%Y年%m月%d日 %H:%M")
@@ -141,7 +163,7 @@ class MCPManager:
                 return
 
             if self._needs_classifier(registered):
-                classification = self._classify(user_message, registered, current_time_str)
+                classification = self._classify(user_message, registered, current_time_str, chat_history)
                 if classification is None:
                     self._fallback_to_llm_and_idle(user_message)
                     return
@@ -167,14 +189,32 @@ class MCPManager:
 
             params["user_message"] = user_message
 
+            # 检查是否已被取消
+            if self.cancel_event and self.cancel_event.is_set():
+                self.send_msg({"event": "chat_cancelled"})
+                self._fallback_to_idle()
+                return
+
             transition_text = TRANSITION_TEXTS.get(tool_name, "正在处理您的请求，指挥官……")
             self._send_stream_message(transition_text)
             self.tts_queue.put({"type": "text", "content": transition_text})
 
             existing_todos_hint = self._build_todos_hint(tool_name)
 
+            # 工具执行前再次检查取消
+            if self.cancel_event and self.cancel_event.is_set():
+                self.send_msg({"event": "chat_cancelled"})
+                self._fallback_to_idle()
+                return
+
             result = tool.execute(params, current_time_str, existing_todos_hint)
             result_text = result.get("result_text", "操作已完成，指挥官。")
+
+            # 结果发送前检查取消
+            if self.cancel_event and self.cancel_event.is_set():
+                self.send_msg({"event": "chat_cancelled"})
+                self._fallback_to_idle()
+                return
 
             self._send_stream_message(result_text)
             self.tts_queue.put({"type": "text", "content": result_text})
@@ -187,11 +227,7 @@ class MCPManager:
             self._fallback_to_idle()
 
     def _needs_classifier(self, registered):
-        if "todo" in registered:
-            return True
-        if len(registered) > 1:
-            return True
-        return False
+        return len(registered) > 1
 
     def _fallback_to_idle(self):
         with self.state_lock:
@@ -203,7 +239,7 @@ class MCPManager:
         with self.state_lock:
             self._set_substate("idle")
 
-    def _classify(self, user_message, matched_tools, current_time_str):
+    def _classify(self, user_message, matched_tools, current_time_str, chat_history=None):
         available = {t: TOOL_DESCRIPTIONS[t] for t in matched_tools if t in TOOL_DESCRIPTIONS}
         if not available:
             return None
@@ -212,10 +248,21 @@ class MCPManager:
         desc_lines.append(f"{len(available) + 1}. normal: 不属于任何MCP工具，进入正常对话流程")
         tool_descriptions = "\n".join(desc_lines)
 
+        context = ""
+        if chat_history and len(chat_history) > 0:
+            context = "最近对话历史：\n"
+            for msg in chat_history[-3:]:
+                role = "指挥官" if msg["role"] == "user" else "副官"
+                context += f"{role}: {msg['content']}\n"
+
+        matched_keywords_str = ", ".join(matched_tools)
+
         prompt = CLASSIFIER_PROMPT_TEMPLATE.format(
             tool_descriptions=tool_descriptions,
             current_time=current_time_str,
             default_city=self.default_city,
+            context=context,
+            matched_keywords=matched_keywords_str,
             user_input=user_message
         )
 

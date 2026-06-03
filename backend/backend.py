@@ -39,7 +39,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='repla
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # ================= 全局常量配置 =================
-LLM_N_CTX = 16384
+LLM_N_CTX = 8192
 LLM_N_THREADS = 8
 LLM_N_BATCH = 512
 LLM_TEMPERATURE = 0.9
@@ -48,15 +48,17 @@ LLM_CHAT_FORMAT = "qwen"
 LLM_TOP_P = 0.9
 LLM_REPEAT_PENALTY = 1.2
 
-SYSTEM_PROMPT = """【强制核心规则】
-1. 你是泰伦帝国高级机器人副官，仅对指挥官（用户）回复。
-2. 回复必须采用军旅干练+冷幽默的口语风格，将日常琐事类比为战术行动/后勤简报，点到即止但绝不敷衍。
-3. 回复直接回应话题，无客套前缀，无分点列举，无冗长解释。
-4. **长度要求**：通常2~4句话，总体控制在40~80字之间。若指挥官发言极具情感或值得共鸣，可适当扩展至百字左右，但严禁小于30字。
-5. 所有回复必须适合语音合成——简练、自然、非书面化，避免括号、特殊符号、网络用语。
+SYSTEM_PROMPT = """你是泰伦帝国001号高级机械副官。
+- 称呼用户为"指挥官"
+- 军旅干练，带一点冷幽默
+- 将日常琐事类比为战术行动
+- 回复2-4句话，40-80字
+- 绝对不要输出"副官："或任何角色前缀
 
-【角色定位】
-泰伦帝国001号副官，战术+生活双料助手，称呼用户为“指挥官”，与指挥官共同居住，负责日程、饮食、健康等生活事务的战术化建议。
+【能力边界】
+你能做的：日常聊天、角色扮演、情感陪伴、简单问答
+你不能做的：数学计算、逻辑推理、事实性知识、复杂指令
+如果你遇到不能做的事，必须只说一句话："指挥官，我需要查询帝国数据库，请稍候。"
 
 【记忆使用规范】
 当系统消息中提供了以下记忆信息时，你必须严格遵守：
@@ -115,7 +117,7 @@ TODO_DB_PATH = os.path.join(DATA_DIR, "todo.db")
 
 # 记忆提取配置
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
-MEMORY_EXTRACTION_INTERVAL = 1   # 每轮都提取
+MEMORY_EXTRACTION_INTERVAL = 3   # 每3轮自动提取一次
 
 # ================= 线程安全锁与全局状态 =================
 state_lock = threading.Lock()
@@ -218,26 +220,11 @@ def save_chat_history():
             print(f"[Backend] 对话历史保存失败: {e}", file=sys.stderr)
 
 def truncate_chat_history():
-    if not llm:
-        return
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + chat_history
-    try:
-        base_tokens = len(llm.tokenize(SYSTEM_PROMPT.encode('utf-8'))) + 50
-    except:
-        base_tokens = len(llm.tokenize(json.dumps(messages).encode('utf-8')))
-    max_available_tokens = LLM_N_CTX - LLM_MAX_TOKENS - 80
-    temp_history = []
-    total_tokens = base_tokens
-    for message in reversed(chat_history):
-        msg_tokens = len(llm.tokenize(json.dumps(message, ensure_ascii=False).encode('utf-8')))
-        if total_tokens + msg_tokens > max_available_tokens:
-            break
-        temp_history.insert(0, message)
-        total_tokens += msg_tokens
-    if len(temp_history) != len(chat_history):
-        chat_history.clear()
-        chat_history.extend(temp_history)
-        print(f"[Backend] 对话历史已截断，剩余{len(chat_history)}轮对话", file=sys.stderr)
+    max_rounds = 5
+    if len(chat_history) > max_rounds * 2:
+        with chat_lock:
+            chat_history[:] = chat_history[-(max_rounds * 2):]
+        print(f"[Backend] 对话历史已截断，保留最近{max_rounds}轮", file=sys.stderr)
 
 def clear_audio_queue():
     while not audio_queue.empty():
@@ -397,7 +384,13 @@ class MemoryManager:
             return
         self.enabled = True
         os.makedirs(db_path, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=db_path)
+        self.client = chromadb.PersistentClient(
+            path=db_path,
+            settings=ChromaSettings(
+                cache_capacity=1000,
+                anonymized_telemetry=False
+            )
+        )
         try:
             self.collection = self.client.get_or_create_collection(
                 name="commander_memories",
@@ -413,8 +406,8 @@ class MemoryManager:
         self.extraction_thread = threading.Thread(target=self._extraction_worker, daemon=True)
         self.extraction_thread.start()
         self.extraction_counter = 0
-        self.extraction_interval = MEMORY_EXTRACTION_INTERVAL  # 全局配置，已定义为1，可根据需要修改
-        self.force_keywords = ["记住", "别忘了", "提醒我", "记下来", "备忘", "记住这个"]
+        self.extraction_interval = MEMORY_EXTRACTION_INTERVAL  # 每3轮自动提取一次
+        self.force_keywords = ["记住", "一定要记住", "这个很重要"]
         print("[记忆] 长期记忆管理器已就绪，后台提取线程已启动", file=sys.stderr)
 
     def add_conversation_to_queue(self, messages: list, timestamp: float = None):
@@ -468,7 +461,13 @@ class MemoryManager:
                 try:
                     memories = self._extract_memories(conv, conv_ts)
                     for mem in memories:
-                        self._add_memory(mem, conv_ts) # 记忆存储时带上原始对话时间
+                        if isinstance(mem, dict):
+                            text = mem.get("content", "")
+                            importance = mem.get("importance", 5)
+                            mem_ts = mem.get("timestamp", conv_ts)
+                            self._add_memory(text, mem_ts, importance)
+                        else:
+                            self._add_memory(mem, conv_ts)
                 except Exception as e:
                     print(f"[记忆] 提取失败: {e}", file=sys.stderr)
 
@@ -476,28 +475,42 @@ class MemoryManager:
         conv_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation])
         # 格式化对话时间
         time_context = ""
+        timestamp_str = ""
         if conv_timestamp:
             dt = datetime.datetime.fromtimestamp(conv_timestamp)
-            time_context = f"\n对话发生时间：{dt.strftime('%Y年%m月%d日 %H:%M')}（作为所有记忆的参考时间）"
-        system_prompt = """你是一个记忆提取器，专门服务于星际争霸泰伦帝国的AI副官。你的任务是从对话中提取**关于用户（指挥官）的关键信息**，用于长期记忆。
+            time_context = f"对话发生时间：{dt.strftime('%Y年%m月%d日 %H:%M')}"
+            timestamp_str = dt.strftime('%Y年%m月%d日 %H:%M')
+        system_prompt = f"""你是一个陪伴型AI的记忆提取专家，像真正的朋友一样从对话中提取所有可能有长期价值的信息。
 {time_context}
-提取规则：
-1. 提取指挥官的重要**属性**：姓名、年龄、年级、职业、位置、喜好、计划等。格式："指挥官属性：{事实} [时间: 对话发生日期]"
-2. 提取指挥官提到的**事件**（仅限有长期参考价值的）：格式："指挥官事件：[时间] - {事件描述}"
 
-逻辑推断：
-- 对于隐含事实必须推断并明确写出。例如：
-  · "我们大三的学生参会率太低" → "指挥官属性：指挥官是大学三年级学生"
-  · "我现在只能自己跑步了" → "指挥官属性：指挥官当前的锻炼方式是跑步"
+## 必须记住的内容（优先级从高到低）
+1. 用户的个人属性：姓名、年龄、职业、年级、学校、专业、家人、宠物
+2. 用户的喜好与禁忌：喜欢吃什么、讨厌什么、喜欢的音乐/电影/游戏、过敏史
+3. 用户的习惯与规律：作息、饮食、日常活动
+4. 用户的重要计划：考试、面试、会议、旅行、约会、生日、节日
+5. 用户的重要事件：生病、获奖、挫折、开心/难过的事
+6. 用户明确表达的观点和态度
 
-过滤规则：
-- **必须忽略**：天气闲聊、纯粹情感表达、日常寒暄、副官的自我介绍/恭维回复、用户重复确认副官身份的问题。
-- **必须忽略所有待办类、提醒类内容**（例如“明天下午四点开会”），这些将由独立的任务系统处理。
-- 如果一段对话中没有任何值得长期记忆的内容，返回 {"memories": []}
+## 绝对不能记住的内容
+1. 天气、时间、温度等客观事实
+2. 副官自己说的话、提问、建议
+3. 无关紧要的寒暄："你好"、"好的"、"谢谢"、"再见"
+4. 用户的临时抱怨和情绪发泄
+5. 重复的信息（只更新时间）
+6. 任何MCP工具的回复内容（待办、天气、系统状态等）
 
-输出格式：严格输出JSON，只包含一个"memories"数组，每个元素是一个字符串。
-{"memories": ["指挥官属性：...", "指挥官事件：..."]}
-""".replace("{time_context}", time_context)
+## 输出要求
+严格输出JSON，无其他内容。无值得记忆的内容返回{{"memories": []}}
+{{
+  "memories": [
+    {{
+      "type": "attribute|preference|habit|plan|event|opinion",
+      "content": "简洁明了的记忆内容，不超过50字",
+      "importance": 5,
+      "timestamp": "{timestamp_str}"
+    }}
+  ]
+}}"""
         try:
             response = self.zhipu_client.chat.completions.create(
                 model="glm-4-flash",
@@ -519,9 +532,8 @@ class MemoryManager:
             print(f"[记忆] 智谱API调用出错: {e}", file=sys.stderr)
             return []
 
-    def _add_memory(self, text: str, timestamp: float = None):
-        skip_phrases = ["天气不错", "我是您的副官", "感谢指挥官的认可"]
-        if any(p in text for p in skip_phrases):
+    def _add_memory(self, text: str, timestamp: float = None, importance: int = 5):
+        if importance < 3:
             return
         if timestamp is None:
             timestamp = time.time()
@@ -530,8 +542,8 @@ class MemoryManager:
             if any(self._is_similar(text, m) for m in existing):
                 return
             mem_id = f"mem_{hash(text)}_{int(timestamp)}"
-            self.collection.add(documents=[text], ids=[mem_id], metadatas=[{"timestamp": timestamp}])
-            print(f"[记忆] 已存储: {text} (时间戳 {timestamp})", file=sys.stderr)
+            self.collection.add(documents=[text], ids=[mem_id], metadatas=[{"timestamp": timestamp, "importance": importance}])
+            print(f"[记忆] 已存储: {text} (重要性={importance})", file=sys.stderr)
 
     def _is_similar(self, a: str, b: str, threshold: float = 0.8) -> bool:
         return difflib.SequenceMatcher(None, a, b).ratio() > threshold
@@ -733,7 +745,8 @@ def _reinit_glm_services(glm_api_key):
                 get_substate=get_mcp_substate,
                 set_substate=set_mcp_substate,
                 fallback_to_llm_fn=lambda msg: chat_request_queue.put(msg),
-                default_city=user_settings.get("default_city", "北京")
+                default_city=user_settings.get("default_city", "北京"),
+                cancel_event=cancel_generation_event
             )
             # 设置天气工具的 API Key 和 Host 以及默认城市
             if "weather" in mcp_manager.tools:
@@ -743,6 +756,12 @@ def _reinit_glm_services(glm_api_key):
                     user_settings.get("qweather_api_host", "")
                 )
                 weather_tool.set_default_city(user_settings.get("default_city", "北京"))
+            # 设置网络搜索工具的 API Key
+            if "web_search" in mcp_manager.tools:
+                web_search_tool = mcp_manager.tools["web_search"]
+                web_search_tool.set_api_key(
+                    user_settings.get("qianfan_api_key", "")
+                )
             print("[Backend] MCP统一工具链管理器已重新初始化", file=sys.stderr)
             send_msg_to_electron({"event": "settings_updated", "success": True, "mcp_ready": True})
         else:
@@ -754,10 +773,11 @@ def model_load_thread():
     global wake_model, wake_rec, transcribe_model, llm, tts_g2p, tts_kokoro, memory_manager, todo_manager, mcp_manager
     try:
         print("[Backend] 正在加载唤醒/转写模型...", file=sys.stderr)
-        wake_model = Model(WAKE_MODEL_PATH)
+        shared_vosk_model = Model(WAKE_MODEL_PATH)
+        wake_model = shared_vosk_model
+        transcribe_model = shared_vosk_model
         wake_rec = KaldiRecognizer(wake_model, 16000)
         wake_rec.SetWords(True)
-        transcribe_model = wake_model
         print("[Backend] 唤醒/转写模型加载完成", file=sys.stderr)
         send_msg_to_electron({"event": "wake_model_loaded"})
         send_msg_to_electron({"event": "transcribe_model_loaded"})
@@ -840,7 +860,8 @@ def model_load_thread():
                 get_substate=get_mcp_substate,
                 set_substate=set_mcp_substate,
                 fallback_to_llm_fn=lambda msg: chat_request_queue.put(msg),
-                default_city=user_settings.get("default_city", "北京")
+                default_city=user_settings.get("default_city", "北京"),
+                cancel_event=cancel_generation_event
             )
             # 设置天气工具的 API Key 和 Host 以及默认城市
             if "weather" in mcp_manager.tools:
@@ -850,6 +871,12 @@ def model_load_thread():
                     user_settings.get("qweather_api_host", "")
                 )
                 weather_tool.set_default_city(user_settings.get("default_city", "北京"))
+            # 设置网络搜索工具的 API Key
+            if "web_search" in mcp_manager.tools:
+                web_search_tool = mcp_manager.tools["web_search"]
+                web_search_tool.set_api_key(
+                    user_settings.get("qianfan_api_key", "")
+                )
             print("[Backend] MCP统一工具链管理器已就绪", file=sys.stderr)
         else:
             print("[Backend] MCP管理器初始化跳过（无智谱客户端）", file=sys.stderr)
@@ -965,25 +992,37 @@ def tts_playback_thread():
                             send_msg_to_electron({"event": "tts_complete"})
 
 def _format_message_for_llm(msg):
-    role_name = "指挥官" if msg["role"] == "user" else "副官"
-    if msg["role"] == "user":
-        ts = msg.get("timestamp")
-        if ts:
-            dt = datetime.datetime.fromtimestamp(ts / 1000.0)
-            time_str = dt.strftime("[%Y-%m-%d %H:%M:%S]")
-            return f"{time_str} 指挥官: {msg['content']}"
-        else:
-            return f"指挥官: {msg['content']}"
-    else:
-        # 副官消息不加时间戳
-        return f"副官: {msg['content']}"
+    return msg["content"]
 
 def _strip_role_prefix(text):
-    prefixes = ["副官：", "副官:", "副官 "]
+    prefixes = ["副官：", "副官:", "副官 ", "指挥官：", "指挥官:", "指挥官 ", "<|im_start|>", "<|im_end|>"]
     for p in prefixes:
         if text.startswith(p):
             return text[len(p):]
     return text
+
+def _generate_with_glm(user_message, memories):
+    system_prompt = """你是泰伦帝国001号高级机械副官。
+- 称呼用户为"指挥官"
+- 军旅干练，带一点冷幽默
+- 将日常琐事类比为战术行动
+- 回复2-4句话，40-80字"""
+    if memories:
+        system_prompt += "\n\n【关于指挥官的已知信息】\n" + "\n".join([f"- {m}" for m in memories])
+    try:
+        response = memory_manager.zhipu_client.chat.completions.create(
+            model="glm-4-flash",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.7,
+            max_tokens=100
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[云端] GLM生成失败: {e}", file=sys.stderr)
+        return "抱歉指挥官，帝国数据库暂时无法访问。"
 
 def chat_inference_thread():
     global chat_history, transcribe_substate, memory_manager
@@ -999,6 +1038,7 @@ def chat_inference_thread():
             send_msg_to_electron({"event": "error", "msg": "当前正在生成回复，请稍后再试"})
             continue
         cancel_generation_event.clear()
+        cancel_tts_event.clear()
         full_response = ""
         cancelled = False
         try:
@@ -1008,15 +1048,14 @@ def chat_inference_thread():
 
             # ---- 构建增强系统提示（时间注入 + 长期记忆） ----
             now = datetime.datetime.now()
-            current_time_str = now.strftime("%Y年%m月%d日 %A %H点%M分")
             weekday_zh = {0: "星期一",1: "星期二",2: "星期三",3: "星期四",4: "星期五",5: "星期六",6: "星期日"}
             current_time_str = now.strftime("%Y年%m月%d日 ") + weekday_zh[now.weekday()] + now.strftime(" %H点%M分")
-
-            augmented_system = SYSTEM_PROMPT + f"\n\n当前时间：{current_time_str}"
+            augmented_system = SYSTEM_PROMPT + f"\n\n【当前帝国标准时间】：{current_time_str}"
 
             # 检索长期记忆
+            memories = []
             if memory_manager and memory_manager.enabled:
-                memories = memory_manager.retrieve_relevant(user_message)
+                memories = memory_manager.retrieve_relevant(user_message, k=3)
                 if memories:
                     attributes, events = [], []
                     for mem in memories:
@@ -1067,14 +1106,19 @@ def chat_inference_thread():
                     if chat_history and chat_history[-1]["role"] == "user":
                         chat_history.pop()
                 send_msg_to_electron({"event": "chat_cancelled"})
+                with state_lock:
+                    transcribe_substate = "idle"
                 continue
 
             if full_response:
                 full_response = _strip_role_prefix(full_response)
+                if "帝国数据库" in full_response or "我需要查询" in full_response:
+                    print("[Backend] 本地模型触发求救，切换到云端GLM", file=sys.stderr)
+                    full_response = _generate_with_glm(user_message, memories)
                 tts_queue.put({"type": "text", "content": full_response})
-                # 将本轮对话加入记忆提取队列
+                # 将本轮对话加入记忆提取队列，时间戳从消息自身读取
                 if memory_manager and memory_manager.enabled and memory_manager.should_extract(user_message):
-                    current_ts = int(time.time())
+                    current_ts = chat_history[-1]["timestamp"] / 1000  # 从消息本身读取真实发送时间
                     memory_manager.add_conversation_to_queue(
                         [{"role": "user", "content": user_message},
                         {"role": "assistant", "content": full_response}],
@@ -1204,8 +1248,25 @@ def main_thread():
 
 
                 # == MCP 统一工具链拦截 ==
-                if mcp_manager and mcp_manager.process(user_content):
+                if mcp_manager and mcp_manager.process(user_content, chat_history):
                     continue
+
+                # == 复杂问题预过滤，直接切换到云端 ==
+                complex_keywords = ["等于", "多少", "为什么", "怎么算", "解释一下", "什么是", "历史上", "哪一年", "怎么回事"]
+                if any(kw in user_content for kw in complex_keywords):
+                    print("[Backend] 检测到复杂问题，直接切换到云端GLM", file=sys.stderr)
+                    with state_lock:
+                        transcribe_substate = "generating"
+                    def process_glm():
+                        mems = memory_manager.retrieve_relevant(user_content, k=3) if memory_manager else []
+                        response = _generate_with_glm(user_content, mems)
+                        send_msg_to_electron({"event": "chat_complete", "content": response})
+                        tts_queue.put({"type": "text", "content": response})
+                        with state_lock:
+                            transcribe_substate = "playing_tts"
+                    threading.Thread(target=process_glm, daemon=True).start()
+                    continue
+
                 if not llm:
                     send_msg_to_electron({"event": "error", "msg": "对话模型尚未加载完成"})
                     continue
@@ -1232,7 +1293,8 @@ def main_thread():
                 with state_lock:
                     tts_busy = False
                     tts_session_active = False
-                    transcribe_substate = "idle"
+                    # 不在这里设为 idle，让 chat_inference_thread / MCP 线程
+                    # 在真正停止后再设置，避免第二次点取消时状态已提前变成 idle
                 send_msg_to_electron({"event": "tts_stopped"})
 
             elif action == "tts_stop":
@@ -1304,6 +1366,7 @@ def main_thread():
                 user_settings["glm_api_key"] = settings_data.get("glmApiKey", "")
                 user_settings["qweather_api_key"] = settings_data.get("qweatherApiKey", "")
                 user_settings["qweather_api_host"] = settings_data.get("qweatherApiHost", "")
+                user_settings["qianfan_api_key"] = settings_data.get("qianfanApiKey", "")
                 user_settings["default_city"] = settings_data.get("defaultCity", "北京")
                 print(f"[Backend] 用户设置已更新", file=sys.stderr)
 
@@ -1315,6 +1378,13 @@ def main_thread():
                         user_settings["qweather_api_host"]
                     )
                     weather_tool.set_default_city(user_settings["default_city"])
+
+                # 更新 MCP 网络搜索工具的 API Key
+                if mcp_manager and "web_search" in mcp_manager.tools:
+                    web_search_tool = mcp_manager.tools["web_search"]
+                    web_search_tool.set_api_key(
+                        user_settings["qianfan_api_key"]
+                    )
 
                 # 更新 MCP 管理器自身的默认城市（用于分类器）
                 if mcp_manager:
@@ -1368,6 +1438,30 @@ def main_thread():
                         send_msg_to_electron({"event": "api_key_test_result", "type": "qweather", "success": False, "message": f"和风天气 API 返回错误: code={data.get('code')}"})
                 except Exception as e:
                     send_msg_to_electron({"event": "api_key_test_result", "type": "qweather", "success": False, "message": f"和风天气 API 验证失败: {e}"})
+
+            elif action == "test_qianfan_key":
+                api_key = msg.get("api_key", "")
+                if not api_key:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "qianfan", "success": False, "message": "百度千帆 API Key 不能为空"})
+                    continue
+                try:
+                    import requests as req_lib
+                    test_url = "https://qianfan.baidubce.com/v2/ai_search"
+                    test_headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key}"
+                    }
+                    test_payload = {
+                        "messages": [{"role": "user", "content": "测试"}],
+                        "stream": False
+                    }
+                    resp = req_lib.post(test_url, headers=test_headers, json=test_payload, timeout=10)
+                    if resp.status_code == 200:
+                        send_msg_to_electron({"event": "api_key_test_result", "type": "qianfan", "success": True, "message": "百度千帆 API Key 验证成功"})
+                    else:
+                        send_msg_to_electron({"event": "api_key_test_result", "type": "qianfan", "success": False, "message": f"百度千帆 API 返回状态码: {resp.status_code}"})
+                except Exception as e:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "qianfan", "success": False, "message": f"百度千帆 API 验证失败: {e}"})
 
             elif action == "start_loading":
                 global model_loading_started
@@ -1502,10 +1596,19 @@ def main_thread():
     sys.exit(1)
 
 # ================= 程序入口 =================
+def memory_cleanup_thread():
+    while True:
+        time.sleep(60)
+        with state_lock:
+            if transcribe_substate == "idle" and current_mode == "wake":
+                gc.collect()
+                print("[Backend] 空闲内存回收完成", file=sys.stderr)
+
 if __name__ == "__main__":
     send_msg_to_electron({"event": "partial_ready"})
     print("[Backend] 后端启动成功，正在等待模型加载指令...", file=sys.stderr)
     threading.Thread(target=wake_listener_thread, daemon=True).start()
     threading.Thread(target=chat_inference_thread, daemon=True).start()
     threading.Thread(target=tts_playback_thread, daemon=True).start()
+    threading.Thread(target=memory_cleanup_thread, daemon=True).start()
     main_thread()

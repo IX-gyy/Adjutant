@@ -5,6 +5,7 @@ export interface Settings {
   glmApiKey: string
   qweatherApiKey: string
   qweatherApiHost: string
+  qianfanApiKey: string
   defaultCity: string
 }
 
@@ -13,6 +14,7 @@ const defaultSettings: Settings = {
   glmApiKey: '',
   qweatherApiKey: '',
   qweatherApiHost: '',
+  qianfanApiKey: '',
   defaultCity: '北京'
 }
 
@@ -56,6 +58,7 @@ export function syncSettingsToBackend() {
       glmApiKey: settings.value.glmApiKey,
       qweatherApiKey: settings.value.qweatherApiKey,
       qweatherApiHost: settings.value.qweatherApiHost,
+      qianfanApiKey: settings.value.qianfanApiKey,
       defaultCity: settings.value.defaultCity
     }
     window.electronAPI.sendToBackend({
@@ -82,6 +85,9 @@ export function checkSettings(): { valid: boolean; missing: string[] } {
   }
   if (!settings.value.qweatherApiHost) {
     missing.push('和风天气 API Host')
+  }
+  if (!settings.value.qianfanApiKey) {
+    missing.push('百度千帆 API Key')
   }
 
   return { valid: missing.length === 0, missing }

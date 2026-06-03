@@ -92,6 +92,32 @@
             </div>
             <span class="form-hint">开发版使用 devapi.qweather.com，商业版使用 api.qweather.com</span>
           </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              百度千帆 API Key
+              <span class="required">*</span>
+            </label>
+            <div class="input-row">
+              <input
+                v-model="formData.qianfanApiKey"
+                type="password"
+                class="form-input"
+                placeholder="请输入百度千帆 API Key"
+              />
+              <button
+                class="btn-test"
+                :disabled="!qianfanKeyFilled || testingQianfan"
+                @click="testQianfanKey"
+              >
+                <svg v-if="testingQianfan" class="spinner" viewBox="0 0 24 24" width="14" height="14">
+                  <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="32" stroke-linecap="round"/>
+                </svg>
+                <span v-else>测试</span>
+              </button>
+            </div>
+            <span class="form-hint">用于网络信息搜索功能，每日100次免费额度</span>
+          </div>
         </div>
 
         <!-- Default City Section -->
@@ -149,12 +175,14 @@ const formData = ref<Settings>({
   glmApiKey: '',
   qweatherApiKey: '',
   qweatherApiHost: '',
+  qianfanApiKey: '',
   defaultCity: '北京'
 })
 
 // 测试状态
 const testingGlm = ref(false)
 const testingQweather = ref(false)
+const testingQianfan = ref(false)
 
 // 从存储加载数据到表单
 watch(() => props.visible, (newVisible) => {
@@ -163,10 +191,12 @@ watch(() => props.visible, (newVisible) => {
       glmApiKey: settings.value.glmApiKey,
       qweatherApiKey: settings.value.qweatherApiKey,
       qweatherApiHost: settings.value.qweatherApiHost,
+      qianfanApiKey: settings.value.qianfanApiKey,
       defaultCity: settings.value.defaultCity
     }
     testingGlm.value = false
     testingQweather.value = false
+    testingQianfan.value = false
   }
 })
 
@@ -174,7 +204,8 @@ watch(() => props.visible, (newVisible) => {
 const isValid = computed(() => {
   return formData.value.glmApiKey.trim() !== '' &&
          formData.value.qweatherApiKey.trim() !== '' &&
-         formData.value.qweatherApiHost.trim() !== ''
+         formData.value.qweatherApiHost.trim() !== '' &&
+         formData.value.qianfanApiKey.trim() !== ''
 })
 
 // GLM Key 是否填写
@@ -185,6 +216,9 @@ const qweatherFilled = computed(() =>
   formData.value.qweatherApiKey.trim() !== '' &&
   formData.value.qweatherApiHost.trim() !== ''
 )
+
+// 百度千帆 Key 是否填写
+const qianfanKeyFilled = computed(() => formData.value.qianfanApiKey.trim() !== '')
 
 // 关闭面板
 function closePanel() {
@@ -225,13 +259,25 @@ function testQweatherKey() {
   listenTestResult('qweather')
 }
 
+// 测试百度千帆 API Key
+function testQianfanKey() {
+  if (!qianfanKeyFilled.value) return
+  testingQianfan.value = true
+  sendToBackend({
+    action: 'test_qianfan_key',
+    api_key: formData.value.qianfanApiKey
+  })
+  listenTestResult('qianfan')
+}
+
 // 监听测试结果
-function listenTestResult(type: 'glm' | 'qweather') {
+function listenTestResult(type: 'glm' | 'qweather' | 'qianfan') {
   const unsubscribe = onBackendEvent((event: any) => {
     if (event.event === 'api_key_test_result' && event.type === type) {
       unsubscribe()
       if (type === 'glm') testingGlm.value = false
-      else testingQweather.value = false
+      else if (type === 'qweather') testingQweather.value = false
+      else testingQianfan.value = false
 
       if (event.success) {
         notification.success({
@@ -255,6 +301,9 @@ function listenTestResult(type: 'glm' | 'qweather') {
       notification.error({ message: '测试超时', description: '后端无响应', duration: 3 })
     } else if (type === 'qweather' && testingQweather.value) {
       testingQweather.value = false
+      notification.error({ message: '测试超时', description: '后端无响应', duration: 3 })
+    } else if (type === 'qianfan' && testingQianfan.value) {
+      testingQianfan.value = false
       notification.error({ message: '测试超时', description: '后端无响应', duration: 3 })
     }
   }, 15000)
