@@ -21,11 +21,13 @@
 - qwen2.5-3b-it-Q4_K_M-LOT.gguf[下载](https://www.modelscope.cn/models/okwinds/Qwen2.5-3B-Instruct-GGUF-V3-LOT/files)
 - vosk-model-small-cn[下载](https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip)
 - kokoro-zh onnx版本 参考[GitHub网页](https://github.com/thewh1teagle/kokoro-onnx/blob/main/examples/chinese.py)
+- bge-small-zh-v1.5[下载](https://www.modelscope.cn/models/fuyuantech/bge-small-q8-zh-v1.5)
 
 最终你的文件夹结构应该如下：
 ```
 kokoro-zh/
 qwen2.5-3b-it-Q4_K_M-LOT.gguf
+bge-small-q8-zh-v1.5.gguf
 vosk-model-small-cn/
 ```
 
@@ -35,7 +37,8 @@ vosk-model-small-cn/
 ## 模型API
 项目的赫尔墨斯记忆架构使用了[智谱API](https://bigmodel.cn/)  
 天气查询使用了[和风天气API](https://console.qweather.com/home?lang=zh)  
-你需要先注册，在网站上取得自己的api key后（它们都有免费额度，不必担心），在应用启动后打开设置填入，记忆和天气查询功能才可以使用
+网络搜索使用了[百度千帆API](https://cloud.baidu.com/doc/qianfan/s/Omh4su4s0)
+你需要先注册，在网站上取得自己的api key后（它们都有免费额度，不必担心），在应用启动后打开设置填入，记忆、天气查询、网络搜索功能才可以使用
 
 ## 项目启动
 你需要先在backend文件夹下使用pyinstaller将后端打包成多文件结构，命令为：`pyinstaller backend.spec`  
