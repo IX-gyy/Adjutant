@@ -1368,13 +1368,15 @@ def main_thread():
 
             elif action == "tts_play":
                 with state_lock:
-                    if transcribe_substate == "wake" or tts_busy:
+                    if current_mode == "wake" or tts_busy:
                         send_msg_to_electron({"event": "error", "msg": "当前状态不允许手动播报"})
                         continue
                 text = msg.get("text", "").strip()
                 if not text:
                     send_msg_to_electron({"event": "error", "msg": "播报文本不能为空"})
                     continue
+                # 清除取消标志，否则 TTS 线程会跳过这个任务
+                cancel_tts_event.clear()
                 tts_queue.put({"type": "text", "content": text})
 
             elif action == "clear_history":
