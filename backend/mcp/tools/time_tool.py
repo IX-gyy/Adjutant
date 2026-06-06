@@ -21,6 +21,8 @@ class TimeTool:
             return self._handle_current_time()
         elif sub_op == "date_calc":
             target_date = params.get("target_date")
+            if not target_date:
+                target_date = self._parse_date_target(user_message)
             return self._handle_date_calc(target_date, current_time_str)
         elif sub_op == "countdown":
             duration = params.get("duration")
@@ -200,3 +202,68 @@ class TimeTool:
             return f"{minutes}分{secs}秒"
         else:
             return f"{secs}秒"
+
+    @staticmethod
+    def _parse_date_target(user_message):
+        """从用户消息中解析目标日期。支持：周末、明天、后天、下周、月底、年底 等。"""
+        import re
+        now = datetime.datetime.now()
+
+        # 匹配"X月X日"或"X月X号"格式
+        m = re.search(r'(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]', user_message)
+        if m:
+            month, day = int(m.group(1)), int(m.group(2))
+            year = now.year
+            # 如果该日期今年已过，推到明年
+            target = datetime.datetime(year, month, day)
+            if target < now.replace(hour=0, minute=0, second=0, microsecond=0):
+                target = datetime.datetime(year + 1, month, day)
+            return target.strftime("%Y-%m-%d")
+
+        # 语义日期映射
+        if "周末" in user_message:
+            # 下个周六
+            days_until_saturday = (5 - now.weekday()) % 7
+            if days_until_saturday == 0:
+                days_until_saturday = 7  # 如果今天就是周六，取下周
+            target = now + datetime.timedelta(days=days_until_saturday)
+            return target.strftime("%Y-%m-%d")
+
+        if "后天" in user_message:
+            target = now + datetime.timedelta(days=2)
+            return target.strftime("%Y-%m-%d")
+
+        if "明天" in user_message or "明日" in user_message:
+            target = now + datetime.timedelta(days=1)
+            return target.strftime("%Y-%m-%d")
+
+        if "下周" in user_message:
+            # 下周一
+            days_until_monday = (7 - now.weekday()) % 7
+            if days_until_monday == 0:
+                days_until_monday = 7
+            target = now + datetime.timedelta(days=days_until_monday)
+            return target.strftime("%Y-%m-%d")
+
+        if "月底" in user_message:
+            # 当月最后一天
+            if now.month == 12:
+                target = datetime.datetime(now.year + 1, 1, 1) - datetime.timedelta(days=1)
+            else:
+                target = datetime.datetime(now.year, now.month + 1, 1) - datetime.timedelta(days=1)
+            return target.strftime("%Y-%m-%d")
+
+        if "年底" in user_message:
+            target = datetime.datetime(now.year, 12, 31)
+            if target < now.replace(hour=0, minute=0, second=0, microsecond=0):
+                target = datetime.datetime(now.year + 1, 12, 31)
+            return target.strftime("%Y-%m-%d")
+
+        if "过年" in user_message or "春节" in user_message:
+            # 粗略估算：2026年春节是2月17日
+            spring_festival = datetime.datetime(now.year, 2, 17)
+            if spring_festival < now.replace(hour=0, minute=0, second=0, microsecond=0):
+                spring_festival = datetime.datetime(now.year + 1, 2, 17)
+            return spring_festival.strftime("%Y-%m-%d")
+
+        return None

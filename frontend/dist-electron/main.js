@@ -53,7 +53,12 @@ function startBackend() {
 			"pipe",
 			"pipe"
 		],
-		windowsHide: true
+		windowsHide: true,
+		env: {
+			...process.env,
+			PYTHONUTF8: "1",
+			PYTHONIOENCODING: "utf-8"
+		}
 	});
 	let buffer = "";
 	backendProcess.stdout?.on("data", (data) => {

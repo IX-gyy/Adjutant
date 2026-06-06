@@ -102,10 +102,26 @@ hiddenimports = [
 ]
 
 # 追加：ChromaDB 全量子模块（含 hnsw 向量索引、sqlite 元数据存储等 C 扩展）
-hiddenimports.extend(collect_submodules('chromadb'))
+# 注意：排除 chromadb.server.* 子模块（FastAPI 服务端），因为本项目只用嵌入式模式
+# chromadb.server 依赖 opentelemetry.instrumentation 等不必要的服务端库
+_chromadb_modules = [
+    m for m in collect_submodules('chromadb')
+    if not m.startswith('chromadb.server')
+]
+hiddenimports.extend(_chromadb_modules)
+
+# ChromaDB 核心依赖 opentelemetry（通过 chromadb.auth.token_authn → chromadb.telemetry.opentelemetry 引用）
+# 需先 pip install opentelemetry-api opentelemetry-sdk
+try:
+    hiddenimports.extend(collect_submodules('opentelemetry'))
+except Exception:
+    pass
 
 # 追加：OpenAI 全量子模块（含 chat.completions、types、base_client 等）
 hiddenimports.extend(collect_submodules('openai'))
+
+# 注意：已移除 sentence-transformers 和 transformers 依赖
+# BGE 嵌入模型现在使用 GGUF 格式，通过 llama_cpp 加载
 
 # 追加：MCP统一工具链模块
 hiddenimports.extend([
@@ -139,7 +155,11 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'chromadb.server',
+        'chromadb.server.fastapi',
+        'chromadb.server.fastapi.types',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

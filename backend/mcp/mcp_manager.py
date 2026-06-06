@@ -1,10 +1,11 @@
 import json
+import sys
 import time
 import datetime
 import threading
 import os
 
-from .keyword_filter import KeywordFilter
+from .keyword_filter import KeywordFilter, HIGH_CONFIDENCE, MEDIUM_CONFIDENCE, CONFIDENCE_GAP
 from .tools.todo_tool import TodoTool
 from .tools.system_tool import SystemTool
 from .tools.time_tool import TimeTool
@@ -14,87 +15,65 @@ from .tools.web_search_tool import WebSearchTool
 
 QWEATHER_DEFAULT_CITY = os.environ.get("QWEATHER_DEFAULT_CITY", "北京")
 
-CLASSIFIER_PROMPT_TEMPLATE = """你是一个严格的意图分类器，只输出JSON格式，不添加任何其他内容。
+# ============================================================================
+# GLM 分类器 Prompt —— 仅用于多意图平局时的简化二元确认（改动2）
+# ============================================================================
+TIEBREAKER_PROMPT = """你是一个快速的意图确认器。用户说了一句话，有两个可能的理解方向。
+请判断用户的真实意图更接近哪一个。
 
-## 任务
-分析用户输入，判断其属于以下哪个工具类别，并提取必要的参数。
+选项 A: {intent_a} — {desc_a}
+选项 B: {intent_b} — {desc_b}
 
-## 工具类别及参数说明
-{tool_descriptions}
-
-## 核心判断标准
-✅ 归为工具：用户明确要求执行某个操作
-❌ 归为normal：只是闲聊、抱怨、陈述事实
-示例：
-- ✅ "今天天气怎么样？" → weather
-- ❌ "今天天气不错" → normal
-- ✅ "提醒我明天开会" → todo
-- ❌ "我明天要开会" → normal
-
-## 上下文参考
-{context}
-
-## 规则
-1. 严格按照上述类别分类，不得新增类别
-2. 若参数不明确，在params中注明"missing": ["参数名"]
-3. 若用户同时请求多个操作，对于todo工具返回第一个最明确的操作；对于其他工具按优先级处理
-4. 绝对禁止输出任何JSON以外的内容
-
-匹配到的工具关键词：{matched_keywords}
-当前时间：{current_time}
-用户默认城市：{default_city}
+只输出 A 或 B，不要输出任何其他内容。
 
 用户输入: {user_input}"""
 
-TOOL_DESCRIPTIONS = {
-    "todo": """1. todo: 待办事项管理
-   - 子操作: add(添加), list(查询), complete(完成), delete(删除)
-   - 参数: content(待办内容), due_date(截止时间, ISO格式YYYY-MM-DD HH:MM), todo_id(待办ID)""",
-
-    "weather": """2. weather: 天气查询
-   - 子操作: now(实时天气), today(今日预报), tomorrow(明日预报), week(多日预报), hour(逐小时预报), air(空气质量), warning(灾害预警), astronomy(天文信息), indices(生活指数)
-   - 参数:
-     * location: 城市名称，必须从用户输入中提取。如用户说"北京天气"→location=北京。如果用户没说城市，location留空""。
-     * sub_op: 子操作类型，根据以下规则精准判断
-     * indices_type: 仅indices子操作时填写（穿衣/紫外线/感冒/洗车/钓鱼/运动/晾晒/全部）
-   - 触发关键词: 天气、气温、下雨、下雪、温度、冷、热、空气质量、AQI、PM2.5、雾霾、预警、台风、暴雨、日出、日落、穿衣、紫外线、感冒、洗车等
-   - 注意：这些触发关键词（如"现在""今天""外面""几点"等）经常出现在日常对话中，仅当用户确实在询问天气相关内容时才归类为weather，否则归normal
-
-【天气子操作判断规则（优先级从高到低）】
-1. 安全优先：只要包含"预警/台风/暴雨/寒潮/大风"等极端天气词 → sub_op=warning
-2. 专项查询：包含"空气质量/AQI/PM2.5/雾霾" → sub_op=air；包含"日出/日落/月相" → sub_op=astronomy
-3. 生活决策：询问"穿什么/适合什么/要不要/容易感冒/洗车/钓鱼/晾晒/紫外线" → sub_op=indices
-4. 时间粒度：
-   - 提及"几点/下午/晚上/上午/中午/小时"等具体时段 → sub_op=hour
-   - 仅提及"现在/外面/这会儿/此刻/当前" → sub_op=now
-   - 仅提及"今天/今日" → sub_op=today
-   - 提及"明天/明日" → sub_op=tomorrow
-   - 提及"这周/本周/下周/未来几天/一周" → sub_op=week
-5. 歧义默认：仅说"天气"无任何修饰 → sub_op=now，location取默认城市
-
-【真实示例】
-- "外面冷不冷？" → {{"tool":"weather", "params":{{"sub_op":"now", "location":""}}}}
-- "北京天气怎么样" → {{"tool":"weather", "params":{{"sub_op":"today", "location":"北京"}}}}
-- "上海明天会下雨吗" → {{"tool":"weather", "params":{{"sub_op":"tomorrow", "location":"上海"}}}}
-- "今天下午几点下雨" → {{"tool":"weather", "params":{{"sub_op":"hour", "location":""}}}}
-- "深圳有没有台风预警" → {{"tool":"weather", "params":{{"sub_op":"warning", "location":"深圳"}}}}
-- "明天穿什么合适" → {{"tool":"weather", "params":{{"sub_op":"indices", "indices_type":"穿衣", "location":""}}}}
-- "北京空气质量怎么样" → {{"tool":"weather", "params":{{"sub_op":"air", "location":"北京"}}}}""",
-
-    "system_status": """3. system_status: 系统状态查询
-   - 子操作: cpu, memory, disk, battery, network, all(全部)
-   - 参数: sub_op(子操作类型, 默认all)""",
-
-    "time_tool": """4. time_tool: 时间管理工具
-   - 子操作: current_time(当前时间), date_calc(日期计算), countdown(倒计时), stopwatch(秒表)
-   - 参数: duration(倒计时时长, 分钟), target_date(目标日期, YYYY-MM-DD), stopwatch_action(start/pause/reset/status)""",
-
-    "web_search": """5. web_search: 网络搜索查询
-   - 说明：通过百度千帆智能搜索查询实时信息
-   - 参数：无特殊参数，直接使用用户输入作为查询内容
-   - 触发规则：用户明确要求搜索、查询、查找信息时触发""",
+INTENT_SIMPLE_DESC = {
+    "todo": "用户想添加或查看待办提醒事项",
+    "weather": "用户想查询天气信息",
+    "system_status": "用户想了解电脑系统运行状态",
+    "time_tool": "用户想查询时间、日期或使用计时功能",
+    "web_search": "用户想在网络上搜索信息",
 }
 
+# ============================================================================
+# 方案A：TODO 追问上下文追踪 —— 肯定/否定关键词检测
+# ============================================================================
+PENDING_TODO_TTL = 3
+
+AFFIRMATION_KEYWORDS = [
+    # 正式中文
+    "是的", "好的", "好", "可以", "行", "嗯", "对", "没错", "需要",
+    "请", "麻烦", "帮我", "麻烦你", "帮我添加", "帮我设置", "帮我记",
+    "记一下", "记录一下", "添加", "设置", "创建", "安排",
+    # 口语/简略
+    "好啊", "好呀", "好吧", "好的呀", "行吧", "行啊", "成", "成啊",
+    "嗯嗯", "嗯好", "可以啊", "可以的", "要的", "要", "搞", "搞吧",
+    "整", "整一个", "来吧", "来", "加一个", "加上", "记上", "记上吧",
+    "那就", "那就麻烦", "有劳", "辛苦了", "拜托",
+    # 英文
+    "yes", "ok", "okay", "yeah", "yep", "sure", "please",
+    "alright", "fine", "go ahead", "do it", "add", "yup", "ya",
+    "yea", "k", "kk", "okie", "okey",
+]
+
+NEGATION_KEYWORDS = [
+    # 正式中文
+    "不用了", "不要了", "算了", "不了", "不需要", "不用", "不必了",
+    "取消", "别", "不要", "别加了", "别记录了", "不用麻烦了",
+    # 口语
+    "算了算了", "还是算了", "不用啦", "不要啦", "改天", "改到其他",
+    "再说", "先不用", "先不要", "暂时不用", "暂时不要", "不用管",
+    "没关系的", "没事", "没事儿",
+    # 英文
+    "no", "nope", "nah", "never mind", "nevermind", "cancel",
+    "skip", "ignore", "don't", "not now", "not anymore",
+    "changed my mind",
+]
+
+# ============================================================================
+# 过渡语
+# ============================================================================
 TRANSITION_TEXTS = {
     "todo": "正在翻阅您的行程计划，指挥官，请稍等……",
     "weather": "正在连接星际气象卫星，指挥官，请稍等……",
@@ -103,11 +82,24 @@ TRANSITION_TEXTS = {
     "web_search": "正在连接星际情报网络，指挥官，请稍等……",
 }
 
+# ============================================================================
+# 改动4：中等置信度 TODO 追问 prompt
+# ============================================================================
+TODO_FOLLOWUP_PROMPT = """指挥官说："{user_message}"
+
+这听上去像是指挥官提到了一个未来的计划或安排。请你以副官的口吻：
+1. 先自然地回应指挥官的话（1-2句）
+2. 然后自然地询问指挥官是否需要将这件事记录为待办提醒（1句）
+3. 整体回复2-3句话，40-80字
+
+对话历史：
+{context}"""
+
 
 class MCPManager:
     def __init__(self, zhipu_client, todo_manager, send_msg_fn, tts_queue,
                  state_lock, get_substate, set_substate, fallback_to_llm_fn=None,
-                 default_city="北京", cancel_event=None):
+                 default_city="北京", cancel_event=None, keyword_filter=None):
         self.zhipu_client = zhipu_client
         self.send_msg = send_msg_fn
         self.tts_queue = tts_queue
@@ -118,7 +110,10 @@ class MCPManager:
         self.default_city = default_city
         self.cancel_event = cancel_event
 
-        self.keyword_filter = KeywordFilter()
+        self.keyword_filter = keyword_filter if keyword_filter is not None else KeywordFilter()
+
+        # 方案A：TODO 追问上下文追踪
+        self.pending_todo_context = None
 
         self.tools = {}
         if todo_manager:
@@ -132,12 +127,21 @@ class MCPManager:
     def enabled(self):
         return self.zhipu_client is not None
 
-    def process(self, user_message, chat_history=None):
-        if not self.enabled:
-            return False
+    # ========================================================================
+    # 主入口
+    # ========================================================================
 
-        matched_tools = self.keyword_filter.match(user_message)
-        if not matched_tools:
+    def process(self, user_message, chat_history=None):
+        """
+        新的意图检测流水线：
+          1. 显式指令快速通道（改动3）
+          2. 嵌入相似度匹配（改动1）
+             - 高置信度 → 直接路由
+             - 中等置信度 TODO → 追问确认（改动4）
+             - 多意图平局 → GLM 简化确认（改动2）
+          3. 关键词匹配后备（仅当嵌入模型不可用时）
+        """
+        if not self.enabled:
             return False
 
         with self.state_lock:
@@ -146,25 +150,187 @@ class MCPManager:
                 return True
             self._set_substate("generating")
 
-        threading.Thread(target=self._process_async, args=(user_message, matched_tools, chat_history), daemon=True).start()
-        return True
+        handled = self._try_route(user_message, chat_history)
+        if not handled:
+            with self.state_lock:
+                self._set_substate("idle")
+        return handled
 
-    def _process_async(self, user_message, matched_tools, chat_history=None):
+    # ========================================================================
+    # 方案A：TODO 追问上下文追踪
+    # ========================================================================
+
+    @staticmethod
+    def _detect_affirmation(user_message):
+        msg_lower = user_message.lower().strip()
+        return any(kw in msg_lower for kw in AFFIRMATION_KEYWORDS)
+
+    @staticmethod
+    def _detect_negation(user_message):
+        msg_lower = user_message.lower().strip()
+        return any(kw in msg_lower for kw in NEGATION_KEYWORDS)
+
+    def _check_pending_todo(self, user_message, chat_history):
+        """检查 pending TODO 上下文。返回：
+        'handled'  — 用户确认，已直接执行 TODO add
+        'cleared'  — 用户否定/放弃，已清除 pending，继续正常路由
+        'continue' — 既非肯定也非否定，继续正常路由（TTL 后续处理）
+        None       — 无 pending 上下文
+        """
+        ctx = self.pending_todo_context
+        if ctx is None:
+            return None
+
+        # 优先检测否定（安全性）
+        if self._detect_negation(user_message):
+            print(f"[MCP] TODO pending: 用户否定，清除上下文", file=sys.stderr, flush=True)
+            self.pending_todo_context = None
+            return 'cleared'
+
+        # 检测肯定：关键词 + todo 语义分数 > 0.35（防止纯闲聊"好的"误触发）
+        if self._detect_affirmation(user_message):
+            scores = self.keyword_filter.match_semantic(user_message)
+            todo_score = scores.get("todo", 0) if scores else 0
+            if todo_score > 0.35:
+                print(f"[MCP] TODO pending: 用户确认 (todo_score={todo_score:.3f})，直接执行 TODO add", file=sys.stderr, flush=True)
+                original_msg = ctx["original_message"]
+                original_history = ctx.get("original_history")
+                self.pending_todo_context = None
+                threading.Thread(
+                    target=self._process_async,
+                    args=(original_msg, ["todo"], original_history, {}),
+                    daemon=True
+                ).start()
+                return 'handled'
+            else:
+                print(f"[MCP] TODO pending: 肯定词命中但 todo_score={todo_score:.3f} 过低，放行正常路由", file=sys.stderr, flush=True)
+
+        return 'continue'
+
+    def _try_route(self, user_message, chat_history):
+        # ---- 第0层：TODO 追问上下文追踪（方案A） ----
+        pending_result = self._check_pending_todo(user_message, chat_history)
+        if pending_result == 'handled':
+            return True
+
+        # ---- 第1层：显式指令快速通道（改动3） ----
+        explicit = self.keyword_filter.match_explicit(user_message)
+        if explicit:
+            tool_name, pre_params = explicit
+            if tool_name in self.tools:
+                print(f"[MCP] 显式指令直达: {tool_name}", file=sys.stderr, flush=True)
+                if pending_result == 'continue' and tool_name == "todo":
+                    self.pending_todo_context = None
+                threading.Thread(
+                    target=self._process_async,
+                    args=(user_message, [tool_name], chat_history, pre_params),
+                    daemon=True
+                ).start()
+                return True
+
+        # ---- 第2层：嵌入相似度匹配（改动1） ----
+        scores = self.keyword_filter.match_semantic(user_message)
+
+        if scores:
+            intents = list(scores.keys())
+            best_intent = intents[0]
+            best_score = scores[best_intent]
+            second_score = scores[intents[1]] if len(intents) > 1 else 0
+
+            print(f"[MCP] 语义匹配: {best_intent}={best_score:.3f}, #2={intents[1] if len(intents) > 1 else 'N/A'}={second_score:.3f}", file=sys.stderr, flush=True)
+
+            # 情况A：高置信度单意图 → 直接路由
+            if best_score >= HIGH_CONFIDENCE and (best_score - second_score) >= CONFIDENCE_GAP:
+                if best_intent in self.tools:
+                    print(f"[MCP] 高置信度路由: {best_intent}", file=sys.stderr, flush=True)
+                    if pending_result == 'continue' and best_intent == "todo":
+                        self.pending_todo_context = None
+                    threading.Thread(
+                        target=self._process_async,
+                        args=(user_message, [best_intent], chat_history, {}),
+                        daemon=True
+                    ).start()
+                    return True
+
+            # 情况B：中等置信度 TODO → 追问确认（改动4）
+            if best_intent == "todo" and best_score >= MEDIUM_CONFIDENCE:
+                print(f"[MCP] 中等置信度TODO，进入追问流程 (score={best_score:.3f})", file=sys.stderr, flush=True)
+                # 新追问替换旧 pending
+                if self.pending_todo_context is not None:
+                    print(f"[MCP] TODO pending: 新的 TODO 追问替换旧上下文", file=sys.stderr, flush=True)
+                self.pending_todo_context = None
+                threading.Thread(
+                    target=self._handle_medium_confidence_todo,
+                    args=(user_message, chat_history),
+                    daemon=True
+                ).start()
+                return True
+
+            # 情况C：多意图平局 → GLM 简化确认（改动2）
+            if best_score - second_score < CONFIDENCE_GAP and second_score >= MEDIUM_CONFIDENCE:
+                second_intent = intents[1]
+                if best_intent in self.tools and second_intent in self.tools:
+                    print(f"[MCP] 意图平局，GLM二选一: {best_intent} vs {second_intent}", file=sys.stderr, flush=True)
+                    threading.Thread(
+                        target=self._process_async,
+                        args=(user_message, [best_intent, second_intent], chat_history, {}),
+                        daemon=True
+                    ).start()
+                    return True
+
+            # 情况D：所有分数都低 → 跳过语义路由，进入关键词后备层
+            print(f"[MCP] 所有意图置信度不足", file=sys.stderr, flush=True)
+
+        # ---- 第3层：关键词匹配后备（嵌入模型不可用时） ----
+        matched_tools = self.keyword_filter.match(user_message)
+        if matched_tools:
+            registered = [t for t in matched_tools if t in self.tools]
+            if registered:
+                print(f"[MCP] 关键词后备匹配: {registered}", file=sys.stderr, flush=True)
+                if pending_result == 'continue':
+                    if "todo" in registered and len(registered) == 1:
+                        self.pending_todo_context = None
+                threading.Thread(
+                    target=self._process_async,
+                    args=(user_message, registered, chat_history, {}),
+                    daemon=True
+                ).start()
+                return True
+
+        # TTL 管理：pending 追问未确认，用户转移话题
+        if pending_result == 'continue':
+            self.pending_todo_context["ttl"] -= 1
+            print(f"[MCP] TODO pending: 用户未确认，TTL={self.pending_todo_context['ttl']}", file=sys.stderr, flush=True)
+            if self.pending_todo_context["ttl"] <= 0:
+                print(f"[MCP] TODO pending: TTL 耗尽，清除上下文", file=sys.stderr, flush=True)
+                self.pending_todo_context = None
+
+        return False
+
+    # ========================================================================
+    # 异步工具执行
+    # ========================================================================
+
+    def _process_async(self, user_message, matched_tools, chat_history=None, pre_params=None):
         try:
             now = datetime.datetime.now()
             current_time_str = now.strftime("%Y年%m月%d日 %H:%M")
 
             tool_name = None
-            params = {}
+            params = pre_params if pre_params else {}
 
             registered = [t for t in matched_tools if t in self.tools]
             if not registered:
                 self._fallback_to_llm_and_idle(user_message)
                 return
 
-            if self._needs_classifier(registered):
+            if len(registered) > 1:
+                # 多个工具 → GLM 二选一确认（改动2）
                 classification = self._classify(user_message, registered, current_time_str, chat_history)
                 if classification is None:
+                    if self.cancel_event and self.cancel_event.is_set():
+                        self._cancel_and_notify()
+                        return
                     self._fallback_to_llm_and_idle(user_message)
                     return
 
@@ -173,14 +339,25 @@ class MCPManager:
                     self._fallback_to_llm_and_idle(user_message)
                     return
 
-                params = classification.get("params", {})
+                # 合并分类器返回的参数
+                cls_params = classification.get("params", {})
+                if cls_params:
+                    params.update(cls_params)
             else:
+                # 单一工具 → 直接执行
                 tool_name = registered[0]
-                if tool_name == "weather":
-                    sub_op = self.keyword_filter.get_weather_sub_op(user_message)
-                    params["sub_op"] = sub_op
-                    if sub_op == "indices":
-                        params["indices_type"] = self.keyword_filter.get_indices_type(user_message)
+
+            # 天气参数提取（覆盖单工具和 GLM 二选一两种路径）
+            if tool_name == "weather" and not params.get("sub_op"):
+                params["sub_op"] = self.keyword_filter.get_weather_sub_op(user_message)
+                if params["sub_op"] == "indices":
+                    params["indices_type"] = self.keyword_filter.get_indices_type(user_message)
+                if not params.get("location"):
+                    params["location"] = self.keyword_filter.get_weather_location(user_message)
+
+            # 时间参数提取
+            if tool_name == "time_tool" and not params.get("sub_op"):
+                params["sub_op"] = self.keyword_filter.get_time_sub_op(user_message)
 
             tool = self.tools.get(tool_name)
             if tool is None:
@@ -189,47 +366,170 @@ class MCPManager:
 
             params["user_message"] = user_message
 
-            # 检查是否已被取消
             if self.cancel_event and self.cancel_event.is_set():
-                self.send_msg({"event": "chat_cancelled"})
-                self._fallback_to_idle()
+                self._cancel_and_notify()
                 return
+
+            # 方案A：执行 TODO 时清除 pending 上下文
+            if tool_name == "todo":
+                self.pending_todo_context = None
 
             transition_text = TRANSITION_TEXTS.get(tool_name, "正在处理您的请求，指挥官……")
             self._send_stream_message(transition_text)
             self.tts_queue.put({"type": "text", "content": transition_text})
+            # 过渡语 TTS 在 generating 状态下入队，TTS 线程会跳过 tts_started
+            # 这里手动补发，确保前端显示停止按钮（方案A）
+            self.send_msg({"event": "tts_started"})
 
             existing_todos_hint = self._build_todos_hint(tool_name)
 
-            # 工具执行前再次检查取消
             if self.cancel_event and self.cancel_event.is_set():
-                self.send_msg({"event": "chat_cancelled"})
-                self._fallback_to_idle()
+                self._cancel_and_notify()
                 return
 
             result = tool.execute(params, current_time_str, existing_todos_hint)
             result_text = result.get("result_text", "操作已完成，指挥官。")
 
-            # 结果发送前检查取消
             if self.cancel_event and self.cancel_event.is_set():
-                self.send_msg({"event": "chat_cancelled"})
-                self._fallback_to_idle()
+                self._cancel_and_notify()
                 return
 
             self._send_stream_message(result_text)
+
+            if self.cancel_event and self.cancel_event.is_set():
+                self._cancel_and_notify()
+                return
+
             self.tts_queue.put({"type": "text", "content": result_text})
 
             with self.state_lock:
                 self._set_substate("playing_tts")
 
         except Exception as e:
-            print(f"[MCP] 异步处理异常: {e}")
+            print(f"[MCP] 异步处理异常: {e}", file=sys.stderr, flush=True)
             self._fallback_to_idle()
 
-    def _needs_classifier(self, registered):
-        return len(registered) > 1
+    # ========================================================================
+    # 改动4：中等置信度 TODO 追问
+    # ========================================================================
+
+    def _handle_medium_confidence_todo(self, user_message, chat_history=None):
+        """当嵌入模型判断用户可能在说 TODO，但不够确定时，主动追问确认。"""
+        try:
+            context = ""
+            if chat_history and len(chat_history) > 0:
+                recent = chat_history[-2:]  # 最近两轮
+                context = "\n".join([
+                    f"{'指挥官' if m['role'] == 'user' else '你'}: {m['content']}"
+                    for m in recent
+                ])
+
+            prompt = TODO_FOLLOWUP_PROMPT.format(
+                user_message=user_message,
+                context=context if context else "（无对话历史）"
+            )
+
+            response = self.zhipu_client.chat.completions.create(
+                model="glm-4-flash",
+                messages=[
+                    {"role": "system", "content": "你是泰伦帝国001号高级机械副官。称呼用户为'指挥官'。军旅干练，带一点冷幽默。回复2-3句话，40-80字。**绝对不要**在回复中输出'副官：'、'副官:'或任何角色前缀标签。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=120,
+                timeout=15.0
+            )
+            reply = response.choices[0].message.content
+
+            # 去除 GLM 可能在回复中输出的角色前缀
+            reply = self._strip_role_prefix(reply)
+
+            if self.cancel_event and self.cancel_event.is_set():
+                self._cancel_and_notify()
+                return
+
+            self._send_stream_message(reply)
+            self.tts_queue.put({"type": "text", "content": reply})
+            # 同 _process_async：TTS 在 generating 状态入队，手动补发 tts_started
+            self.send_msg({"event": "tts_started"})
+
+            with self.state_lock:
+                self._set_substate("playing_tts")
+
+            # 方案A：设置 pending 上下文，等待用户确认/否认
+            self.pending_todo_context = {
+                "original_message": user_message,
+                "original_history": chat_history,
+                "ttl": PENDING_TODO_TTL,
+            }
+            print(f"[MCP] TODO pending: 已设置追问上下文，TTL={PENDING_TODO_TTL}", file=sys.stderr, flush=True)
+
+        except Exception as e:
+            print(f"[MCP] TODO追问失败: {e}", file=sys.stderr, flush=True)
+            self._fallback_to_llm_and_idle(user_message)
+
+    # ========================================================================
+    # 改动2：简化 GLM 分类器 —— 只做二选一
+    # ========================================================================
+
+    def _classify(self, user_message, matched_tools, current_time_str, chat_history=None):
+        # 单工具直接返回
+        if len(matched_tools) == 1:
+            return {"tool": matched_tools[0], "params": {}}
+
+        # 多工具（实际应该是2个）做二选一
+        intent_a = matched_tools[0]
+        intent_b = matched_tools[1]
+        desc_a = INTENT_SIMPLE_DESC.get(intent_a, intent_a)
+        desc_b = INTENT_SIMPLE_DESC.get(intent_b, intent_b)
+
+        prompt = TIEBREAKER_PROMPT.format(
+            intent_a=intent_a,
+            desc_a=desc_a,
+            intent_b=intent_b,
+            desc_b=desc_b,
+            user_input=user_message
+        )
+
+        if self.cancel_event and self.cancel_event.is_set():
+            return None
+
+        try:
+            response = self.zhipu_client.chat.completions.create(
+                model="glm-4-flash",
+                messages=[
+                    {"role": "system", "content": prompt},
+                ],
+                temperature=0.1,
+                max_tokens=10,
+                timeout=15.0
+            )
+            raw = response.choices[0].message.content.strip().upper()
+
+            if raw.startswith("A"):
+                return {"tool": intent_a, "params": {}}
+            elif raw.startswith("B"):
+                return {"tool": intent_b, "params": {}}
+            else:
+                # 输出异常，回退到第一个工具
+                print(f"[MCP] GLM二选一输出异常: '{raw}'，回退到 {intent_a}", file=sys.stderr, flush=True)
+                return {"tool": intent_a, "params": {}}
+
+        except Exception as e:
+            print(f"[MCP] GLM二选一失败: {e}，回退到语义第一意图 {intent_a}", file=sys.stderr, flush=True)
+            return {"tool": intent_a, "params": {}}
+
+    # ========================================================================
+    # 辅助方法
+    # ========================================================================
 
     def _fallback_to_idle(self):
+        with self.state_lock:
+            self._set_substate("idle")
+
+    def _cancel_and_notify(self):
+        self.send_msg({"event": "chat_cancelled"})
+        self.send_msg({"event": "tts_stopped"})
         with self.state_lock:
             self._set_substate("idle")
 
@@ -238,53 +538,6 @@ class MCPManager:
             self._fallback_to_llm(user_message)
         with self.state_lock:
             self._set_substate("idle")
-
-    def _classify(self, user_message, matched_tools, current_time_str, chat_history=None):
-        available = {t: TOOL_DESCRIPTIONS[t] for t in matched_tools if t in TOOL_DESCRIPTIONS}
-        if not available:
-            return None
-
-        desc_lines = [desc for desc in available.values()]
-        desc_lines.append(f"{len(available) + 1}. normal: 不属于任何MCP工具，进入正常对话流程")
-        tool_descriptions = "\n".join(desc_lines)
-
-        context = ""
-        if chat_history and len(chat_history) > 0:
-            context = "最近对话历史：\n"
-            for msg in chat_history[-3:]:
-                role = "指挥官" if msg["role"] == "user" else "副官"
-                context += f"{role}: {msg['content']}\n"
-
-        matched_keywords_str = ", ".join(matched_tools)
-
-        prompt = CLASSIFIER_PROMPT_TEMPLATE.format(
-            tool_descriptions=tool_descriptions,
-            current_time=current_time_str,
-            default_city=self.default_city,
-            context=context,
-            matched_keywords=matched_keywords_str,
-            user_input=user_message
-        )
-
-        try:
-            response = self.zhipu_client.chat.completions.create(
-                model="glm-4-flash",
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.1,
-                max_tokens=400
-            )
-            raw = response.choices[0].message.content
-            json_start = raw.find('{')
-            json_end = raw.rfind('}') + 1
-            if json_start != -1 and json_end > json_start:
-                return json.loads(raw[json_start:json_end])
-            return None
-        except Exception as e:
-            print(f"[MCP] GLM分类失败: {e}")
-            return None
 
     def _build_todos_hint(self, tool_name):
         if tool_name != "todo":
@@ -299,8 +552,18 @@ class MCPManager:
             [f"id={t['id']}, due={t['due_date']}, status={t['status']}, content={t['content']}" for t in todos]
         )
 
+    @staticmethod
+    def _strip_role_prefix(text):
+        prefixes = ["副官：", "副官:", "副官 ", "指挥官：", "指挥官:", "指挥官 ", "<|im_start|>", "<|im_end|>"]
+        for p in prefixes:
+            if text.startswith(p):
+                return text[len(p):]
+        return text
+
     def _send_stream_message(self, text):
         for char in text:
+            if self.cancel_event and self.cancel_event.is_set():
+                return
             self.send_msg({"event": "chat_chunk", "content": char})
             time.sleep(0.02)
         self.send_msg({"event": "chat_complete"})

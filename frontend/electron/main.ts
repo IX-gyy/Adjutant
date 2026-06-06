@@ -48,7 +48,12 @@ function startBackend() {
   backendProcess = spawn(backendPath, [], {
     cwd: path.dirname(backendPath), // 工作目录设为 backend 文件夹
     stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true
+    windowsHide: true,
+    env: {
+      ...process.env,
+      PYTHONUTF8: '1',  // 强制 Python 使用 UTF-8 编码，避免管道通信时的编码/缓冲问题
+      PYTHONIOENCODING: 'utf-8',  // 兼容旧版 Python
+    }
   })
 
   // 接收后端 stdout 的 JSON 事件，转发给渲染进程

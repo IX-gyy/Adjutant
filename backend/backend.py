@@ -28,15 +28,31 @@ import difflib
 from mcp import MCPManager
 
 # ------------------------------
-# 保留原始流引用（防止旧 TextIOWrapper 被 GC 关闭底层管道）
+# 配置标准流为 UTF-8 编码
+# 关键：使用 reconfigure() 而非重新包装 TextIOWrapper
+# 重新包装会导致双重缓冲——当 Electron 通过管道 (pipe) 启动后端时，
+# Python 层的 TextIOWrapper 缓冲和 C 扩展层 (llama.cpp) 的 stderr 缓冲
+# 共享同一个 OS 管道文件描述符，可能造成管道缓冲区死锁，
+# 导致 llama.cpp 在加载模型时挂起。
+# reconfigure() 只修改已有 TextIOWrapper 的属性，不会创建新的缓冲层。
 _original_stdin = sys.stdin
 _original_stdout = sys.stdout
 _original_stderr = sys.stderr
 
-# 重新包装为 UTF-8 编码的文本流
-sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', errors='replace')
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+_streams_configured = False
+for _stream, _name in [(sys.stdin, 'stdin'), (sys.stdout, 'stdout'), (sys.stderr, 'stderr')]:
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+        _streams_configured = True
+    except AttributeError:
+        # Python < 3.7 不支持 reconfigure，回退到重新包装
+        pass
+
+if not _streams_configured:
+    # 回退方案：重新包装（注意：这在管道模式下可能导致缓冲问题）
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', errors='replace')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 # ================= 全局常量配置 =================
 LLM_N_CTX = 8192
@@ -736,6 +752,8 @@ def _reinit_glm_services(glm_api_key):
                 global transcribe_substate
                 transcribe_substate = val
 
+            # 复用已有的 keyword_filter，避免重复加载嵌入模型
+            existing_kf = mcp_manager.keyword_filter if mcp_manager else None
             mcp_manager = MCPManager(
                 zhipu_client=zhipu,
                 todo_manager=todo_manager,
@@ -746,7 +764,8 @@ def _reinit_glm_services(glm_api_key):
                 set_substate=set_mcp_substate,
                 fallback_to_llm_fn=lambda msg: chat_request_queue.put(msg),
                 default_city=user_settings.get("default_city", "北京"),
-                cancel_event=cancel_generation_event
+                cancel_event=cancel_generation_event,
+                keyword_filter=existing_kf
             )
             # 设置天气工具的 API Key 和 Host 以及默认城市
             if "weather" in mcp_manager.tools:
@@ -772,13 +791,13 @@ def _reinit_glm_services(glm_api_key):
 def model_load_thread():
     global wake_model, wake_rec, transcribe_model, llm, tts_g2p, tts_kokoro, memory_manager, todo_manager, mcp_manager
     try:
-        print("[Backend] 正在加载唤醒/转写模型...", file=sys.stderr)
+        print("[Backend] 正在加载唤醒/转写模型...", file=sys.stderr, flush=True)
         shared_vosk_model = Model(WAKE_MODEL_PATH)
         wake_model = shared_vosk_model
         transcribe_model = shared_vosk_model
         wake_rec = KaldiRecognizer(wake_model, 16000)
         wake_rec.SetWords(True)
-        print("[Backend] 唤醒/转写模型加载完成", file=sys.stderr)
+        print("[Backend] 唤醒/转写模型加载完成", file=sys.stderr, flush=True)
         send_msg_to_electron({"event": "wake_model_loaded"})
         send_msg_to_electron({"event": "transcribe_model_loaded"})
     except Exception as e:
@@ -787,7 +806,14 @@ def model_load_thread():
         fatal_error_event.set()
         return
     try:
-        print("[Backend] 正在加载对话模型...", file=sys.stderr)
+        print("[Backend] 正在加载对话模型...", file=sys.stderr, flush=True)
+        # 在调用 Llama() 之前刷新所有输出缓冲区
+        # 这可以防止 Python 层和 C 层（llama.cpp）共享同一个 OS 管道时
+        # 因缓冲数据未刷新而导致的管道阻塞/死锁问题
+        sys.stderr.flush()
+        sys.stdout.buffer.flush()
+        # 通知前端 LLM 加载已开始（用于诊断）
+        send_msg_to_electron({"event": "loading_llm_started"})
         llm = Llama(
             model_path=LLM_MODEL_PATH,
             n_ctx=LLM_N_CTX,
@@ -796,27 +822,16 @@ def model_load_thread():
             verbose=False,
             chat_format=LLM_CHAT_FORMAT
         )
-        print("[Backend] 对话模型加载完成", file=sys.stderr)
-        send_msg_to_electron({"event": "llm_model_loaded"})
+        print("[Backend] 对话模型加载完成", file=sys.stderr, flush=True)
     except Exception as e:
         print(f"[Backend] 对话模型加载失败: {e}", file=sys.stderr)
         send_msg_to_electron({"event": "error", "type": "llm_model_load_fail", "msg": str(e)})
         fatal_error_event.set()
         return
-    try:
-        print("[Backend] 正在加载TTS模型 (misaki + kokoro_onnx)...", file=sys.stderr)
-        tts_g2p = zh.ZHG2P(version="1.1")
-        tts_kokoro = Kokoro(TTS_ONNX_PATH, TTS_VOICES_BIN_PATH, vocab_config=TTS_CONFIG_PATH)
-        print("[Backend] TTS模型加载完成", file=sys.stderr)
-        send_msg_to_electron({"event": "tts_model_loaded"})
-    except Exception as e:
-        print(f"[Backend] TTS模型加载失败: {e}", file=sys.stderr)
-        send_msg_to_electron({"event": "error", "type": "tts_model_load_fail", "msg": str(e)})
-        fatal_error_event.set()
-        return
-    # 加载彩蛋规则
-    load_easter_egg_rules()
+
+    # ---- 串行初始化 MCP 工具链（消除用户可交互但 mcp_manager=None 的窗口） ----
     # 初始化记忆管理器
+    print("[Backend] 正在初始化记忆管理器...", file=sys.stderr, flush=True)
     try:
         glm_key = user_settings.get("glm_api_key", "") or ZHIPU_API_KEY
         memory_manager = MemoryManager(MEMORY_DB_PATH, glm_key)
@@ -824,6 +839,7 @@ def model_load_thread():
         print(f"[Backend] 记忆管理器初始化失败: {e}", file=sys.stderr)
         memory_manager = None
     # 初始化待办管理器
+    print("[Backend] 正在初始化待办管理器...", file=sys.stderr, flush=True)
     try:
         todo_manager = TodoManager(TODO_DB_PATH)
         print("[Backend] 待办事项管理器已就绪", file=sys.stderr)
@@ -831,13 +847,12 @@ def model_load_thread():
         print(f"[Backend] 待办管理器初始化失败: {e}", file=sys.stderr)
         todo_manager = None
 
-    # 初始化MCP统一工具链管理器
+    # 初始化MCP统一工具链管理器（含 KeywordFilter → BGE嵌入模型）
+    print("[Backend] 正在初始化MCP工具链...", file=sys.stderr, flush=True)
     try:
         zhipu = None
-        # 优先使用 memory_manager 的客户端
         if memory_manager and hasattr(memory_manager, 'zhipu_client'):
             zhipu = memory_manager.zhipu_client
-        # 如果 memory_manager 不可用，尝试直接创建
         glm_key = user_settings.get("glm_api_key", "") or ZHIPU_API_KEY
         if not zhipu and glm_key:
             from openai import OpenAI
@@ -863,7 +878,6 @@ def model_load_thread():
                 default_city=user_settings.get("default_city", "北京"),
                 cancel_event=cancel_generation_event
             )
-            # 设置天气工具的 API Key 和 Host 以及默认城市
             if "weather" in mcp_manager.tools:
                 weather_tool = mcp_manager.tools["weather"]
                 weather_tool.set_credentials(
@@ -871,7 +885,6 @@ def model_load_thread():
                     user_settings.get("qweather_api_host", "")
                 )
                 weather_tool.set_default_city(user_settings.get("default_city", "北京"))
-            # 设置网络搜索工具的 API Key
             if "web_search" in mcp_manager.tools:
                 web_search_tool = mcp_manager.tools["web_search"]
                 web_search_tool.set_api_key(
@@ -884,12 +897,28 @@ def model_load_thread():
         print(f"[Backend] MCP管理器初始化失败: {e}", file=sys.stderr)
         mcp_manager = None
 
-    print("[Backend] 所有模型加载完成", file=sys.stderr)
+    send_msg_to_electron({"event": "llm_model_loaded"})
+
+    try:
+        print("[Backend] 正在加载TTS模型 (misaki + kokoro_onnx)...", file=sys.stderr, flush=True)
+        tts_g2p = zh.ZHG2P(version="1.1")
+        tts_kokoro = Kokoro(TTS_ONNX_PATH, TTS_VOICES_BIN_PATH, vocab_config=TTS_CONFIG_PATH)
+        print("[Backend] TTS模型加载完成", file=sys.stderr, flush=True)
+        send_msg_to_electron({"event": "tts_model_loaded"})
+    except Exception as e:
+        print(f"[Backend] TTS模型加载失败: {e}", file=sys.stderr)
+        send_msg_to_electron({"event": "error", "type": "tts_model_load_fail", "msg": str(e)})
+        fatal_error_event.set()
+        return
+    # 加载彩蛋规则
+    load_easter_egg_rules()
+
+    print("[Backend] 所有模型加载完成", file=sys.stderr, flush=True)
     send_msg_to_electron({"event": "full_ready"})
     load_chat_history()
     # 播放欢迎语
     welcome_text = "您好指挥官，副官已上线"
-    print(f"[Backend] 播放欢迎语：{welcome_text}", file=sys.stderr)
+    print(f"[Backend] 播放欢迎语：{welcome_text}", file=sys.stderr, flush=True)
     tts_queue.put({"type": "text", "content": welcome_text})
 
 # ================= TTS 播放线程（保持不变） =================
@@ -919,13 +948,11 @@ def tts_playback_thread():
             if not tts_session_active:
                 tts_busy = True
                 tts_session_active = True
-                # 根据当前子状态决定发送什么事件
-                if transcribe_substate == "idle":
-                    transcribe_substate = "playing_tts"
+                # 除了 generating 外，所有情况都发送 tts_started
+                if transcribe_substate != "generating":
+                    if transcribe_substate == "idle":
+                        transcribe_substate = "playing_tts"
                     send_msg_to_electron({"event": "tts_started"})
-                elif transcribe_substate == "playing_egg":
-                    send_msg_to_electron({"event": "tts_started"})
-                # generating 时不发送 start，且不覆写状态
 
         try:
             if task["type"] == "text":
@@ -1257,10 +1284,30 @@ def main_thread():
                     print("[Backend] 检测到复杂问题，直接切换到云端GLM", file=sys.stderr)
                     with state_lock:
                         transcribe_substate = "generating"
+                    cancel_generation_event.clear()
+                    cancel_tts_event.clear()
                     def process_glm():
+                        # 开始前检查取消
+                        if cancel_generation_event.is_set():
+                            send_msg_to_electron({"event": "chat_cancelled"})
+                            with state_lock:
+                                transcribe_substate = "idle"
+                            return
                         mems = memory_manager.retrieve_relevant(user_content, k=3) if memory_manager else []
+                        # 检索后再次检查取消
+                        if cancel_generation_event.is_set():
+                            send_msg_to_electron({"event": "chat_cancelled"})
+                            with state_lock:
+                                transcribe_substate = "idle"
+                            return
                         response = _generate_with_glm(user_content, mems)
-                        send_msg_to_electron({"event": "chat_complete", "content": response})
+                        # 生成完成后检查取消
+                        if cancel_generation_event.is_set():
+                            send_msg_to_electron({"event": "chat_cancelled"})
+                            with state_lock:
+                                transcribe_substate = "idle"
+                            return
+                        send_msg_to_electron({"event": "chat_complete"})
                         tts_queue.put({"type": "text", "content": response})
                         with state_lock:
                             transcribe_substate = "playing_tts"
@@ -1279,6 +1326,9 @@ def main_thread():
                     if not (current_mode == "transcribe" and transcribe_substate in ("generating", "playing_egg", "playing_tts")):
                         send_msg_to_electron({"event": "error", "msg": "当前没有可取消的任务"})
                         continue
+                    # 记录取消前的状态：如果是 playing_tts/playing_egg，
+                    # 说明生成线程已经完成，不会再有线程来重置状态
+                    need_direct_idle = (transcribe_substate in ("playing_tts", "playing_egg"))
                 cancel_generation_event.set()
                 cancel_tts_event.set()
                 while not tts_queue.empty():
@@ -1293,8 +1343,10 @@ def main_thread():
                 with state_lock:
                     tts_busy = False
                     tts_session_active = False
-                    # 不在这里设为 idle，让 chat_inference_thread / MCP 线程
-                    # 在真正停止后再设置，避免第二次点取消时状态已提前变成 idle
+                    # 如果生成已完成，没有工作线程会再设置 idle，需要直接恢复
+                    if need_direct_idle:
+                        transcribe_substate = "idle"
+                send_msg_to_electron({"event": "chat_cancelled"})
                 send_msg_to_electron({"event": "tts_stopped"})
 
             elif action == "tts_stop":
@@ -1329,6 +1381,8 @@ def main_thread():
                 with chat_lock:
                     chat_history = []
                 save_chat_history()
+                if mcp_manager:
+                    mcp_manager.pending_todo_context = None
                 send_msg_to_electron({"event": "history_cleared"})
 
             elif action == "get_history":
@@ -1391,8 +1445,9 @@ def main_thread():
                     mcp_manager.default_city = user_settings["default_city"]
 
                 # 如果 GLM API Key 从空变为有值，重新初始化 MCP 和记忆管理器
+                # 仅在应用已完全就绪后才触发，避免与 model_load_thread 的 ChromaDB 锁冲突
                 new_glm_key = user_settings["glm_api_key"]
-                if new_glm_key and not old_glm_key:
+                if new_glm_key and not old_glm_key and mcp_manager is not None:
                     threading.Thread(target=_reinit_glm_services, args=(new_glm_key,), daemon=True).start()
 
                 send_msg_to_electron({"event": "settings_updated", "success": True})
@@ -1606,7 +1661,7 @@ def memory_cleanup_thread():
 
 if __name__ == "__main__":
     send_msg_to_electron({"event": "partial_ready"})
-    print("[Backend] 后端启动成功，正在等待模型加载指令...", file=sys.stderr)
+    print("[Backend] 后端启动成功，正在等待模型加载指令...", file=sys.stderr, flush=True)
     threading.Thread(target=wake_listener_thread, daemon=True).start()
     threading.Thread(target=chat_inference_thread, daemon=True).start()
     threading.Thread(target=tts_playback_thread, daemon=True).start()

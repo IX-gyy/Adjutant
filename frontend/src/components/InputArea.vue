@@ -50,7 +50,7 @@
       <textarea
         ref="textareaRef"
         v-model="inputValue"
-        :disabled="disabled || isTranscribing || isGenerating"
+        :disabled="disabled || isTranscribing || isGenerating || isTtsPlaying"
         :placeholder="placeholder"
         class="input-textarea"
         rows="1"
@@ -63,7 +63,7 @@
           type="default"
           shape="circle"
           :loading="isTranscribing || isGenerating"
-          :disabled="disabled || isGenerating || isTranscribing"
+          :disabled="disabled || isGenerating || isTranscribing || isTtsPlaying"
           class="voice-btn"
           :class="{ 'is-recording': isRecording }"
           @mousedown="startRecording"
@@ -82,7 +82,7 @@
         <AButton
           type="primary"
           shape="circle"
-          :disabled="!canSend || isTranscribing || isGenerating"
+          :disabled="!canSend || isTranscribing || isGenerating || isTtsPlaying"
           :loading="isGenerating"
           class="send-btn"
           @click="handleSend"
