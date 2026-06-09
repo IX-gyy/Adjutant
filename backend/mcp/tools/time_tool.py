@@ -221,6 +221,42 @@ class TimeTool:
             return target.strftime("%Y-%m-%d")
 
         # 语义日期映射
+
+        # 匹配"这周日"、"下周三"、"本周五"、"周一"等星期表达
+        weekday_map = {
+            "周一": 0, "星期一": 0, "周二": 1, "星期二": 1,
+            "周三": 2, "星期三": 2, "周四": 3, "星期四": 3,
+            "周五": 4, "星期五": 4, "周六": 5, "星期六": 5,
+            "周日": 6, "星期日": 6, "星期天": 6,
+        }
+        m_week = re.search(r'(这周|本周|下周|下个星期|下星期|周|星期)([一二三四五六日天1-6])', user_message)
+        if not m_week:
+            # 也匹配单独的"周一"、"周日"等（无前缀）
+            m_week = re.search(r'(周[一二三四五六日天])|(星期[一二三四五六日天])', user_message)
+        if m_week:
+            day_str = m_week.group(0)
+            # 确定目标星期几（0=周一, 6=周日）
+            target_weekday = None
+            for key, wd in weekday_map.items():
+                if key in day_str:
+                    target_weekday = wd
+                    break
+            if target_weekday is not None:
+                # 确定"这周"还是"下周"
+                is_next_week = any(kw in user_message for kw in ["下周", "下个星期", "下星期"])
+                days_until = (target_weekday - now.weekday()) % 7
+                if is_next_week:
+                    if days_until == 0:
+                        # 今天就是X → 下周X = +7天
+                        days_until = 7
+                    elif target_weekday > now.weekday():
+                        # 即将到来的X还在本周 → 推到下周
+                        days_until += 7
+                    # else: 即将到来的X已经在下周 → 保持days_until不变
+                # 非"下周"：days_until=0即今天，>0即最近的下一个X日（不额外加7）
+                target = now + datetime.timedelta(days=days_until)
+                return target.strftime("%Y-%m-%d")
+
         if "周末" in user_message:
             # 下个周六
             days_until_saturday = (5 - now.weekday()) % 7

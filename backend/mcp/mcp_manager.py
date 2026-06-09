@@ -314,7 +314,21 @@ class MCPManager:
     def _process_async(self, user_message, matched_tools, chat_history=None, pre_params=None):
         try:
             now = datetime.datetime.now()
-            current_time_str = now.strftime("%Y年%m月%d日 %H:%M")
+            weekday_zh = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+            current_time_str = now.strftime("%Y年%m月%d日") + f" {weekday_zh[now.weekday()]} " + now.strftime("%H:%M")
+            # 计算本周和下周的日期参考，帮助LLM准确推算相对日期
+            week_start = now - datetime.timedelta(days=now.weekday())  # 本周一
+            day_abbr = ["一", "二", "三", "四", "五", "六", "日"]
+            date_ref_parts = ["本周：" + " ".join(
+                f"{day_abbr[i]}{(week_start + datetime.timedelta(days=i)).strftime('%m月%d日')}"
+                for i in range(7)
+            )]
+            next_week_start = week_start + datetime.timedelta(days=7)
+            date_ref_parts.append("下周：" + " ".join(
+                f"{day_abbr[i]}{(next_week_start + datetime.timedelta(days=i)).strftime('%m月%d日')}"
+                for i in range(7)
+            ))
+            current_time_str += "\n日期参考：" + "；".join(date_ref_parts)
 
             tool_name = None
             params = pre_params if pre_params else {}

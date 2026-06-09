@@ -587,7 +587,8 @@ class MemoryManager:
             timestamp = time.time()
 
         now = datetime.datetime.fromtimestamp(timestamp)
-        current_time_str = now.strftime("%Y年%m月%d日 %H:%M")
+        weekday_zh = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        current_time_str = now.strftime("%Y年%m月%d日") + f" {weekday_zh[now.weekday()]} " + now.strftime("%H:%M")
 
         system_prompt = f"""你是一个星际争霸泰伦帝国AI副官的行动中枢，专门处理待办事项。
     当前时间：{current_time_str}
@@ -963,6 +964,8 @@ def tts_playback_thread():
                     speed=TTS_SPEED,
                     is_phonemes=True
                 )
+                if cancel_tts_event.is_set():
+                    raise InterruptedError("TTS cancelled")
                 sd.play(samples, sample_rate)
                 while sd.get_stream().active:
                     if cancel_tts_event.is_set():
@@ -983,6 +986,8 @@ def tts_playback_thread():
                     frames = wf.readframes(wf.getnframes())
                     audio_data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
+                if cancel_tts_event.is_set():
+                    raise InterruptedError("TTS cancelled")
                 sd.play(audio_data, samplerate=sr)
                 while sd.get_stream().active:
                     if cancel_tts_event.is_set():
@@ -1004,6 +1009,7 @@ def tts_playback_thread():
                     except queue.Empty:
                         break
                 sd.stop()
+                cancel_tts_event.clear()
                 with state_lock:
                     tts_busy = False
                     tts_session_active = False
