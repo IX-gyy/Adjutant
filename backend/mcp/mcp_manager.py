@@ -11,6 +11,7 @@ from .tools.system_tool import SystemTool
 from .tools.time_tool import TimeTool
 from .tools.weather_tool import WeatherTool
 from .tools.web_search_tool import WebSearchTool
+from .tools.time_resolver import pre_resolve_message, build_date_reference
 
 
 QWEATHER_DEFAULT_CITY = os.environ.get("QWEATHER_DEFAULT_CITY", "北京")
@@ -316,19 +317,11 @@ class MCPManager:
             now = datetime.datetime.now()
             weekday_zh = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
             current_time_str = now.strftime("%Y年%m月%d日") + f" {weekday_zh[now.weekday()]} " + now.strftime("%H:%M")
-            # 计算本周和下周的日期参考，帮助LLM准确推算相对日期
-            week_start = now - datetime.timedelta(days=now.weekday())  # 本周一
-            day_abbr = ["一", "二", "三", "四", "五", "六", "日"]
-            date_ref_parts = ["本周：" + " ".join(
-                f"{day_abbr[i]}{(week_start + datetime.timedelta(days=i)).strftime('%m月%d日')}"
-                for i in range(7)
-            )]
-            next_week_start = week_start + datetime.timedelta(days=7)
-            date_ref_parts.append("下周：" + " ".join(
-                f"{day_abbr[i]}{(next_week_start + datetime.timedelta(days=i)).strftime('%m月%d日')}"
-                for i in range(7)
-            ))
-            current_time_str += "\n日期参考：" + "；".join(date_ref_parts)
+            # 使用共享函数构建日期参考表
+            current_time_str += "\n日期参考：" + build_date_reference(now)
+
+            # 预解析用户消息中的相对时间表达
+            resolved_info = pre_resolve_message(user_message, now)
 
             tool_name = None
             params = pre_params if pre_params else {}
@@ -378,7 +371,9 @@ class MCPManager:
                 self._fallback_to_llm_and_idle(user_message)
                 return
 
-            params["user_message"] = user_message
+            params["user_message"] = resolved_info.get("enriched_message", user_message)
+            params["resolved_dates"] = resolved_info.get("resolved", [])
+            params["resolved_best_date"] = resolved_info.get("best_date_str")
 
             if self.cancel_event and self.cancel_event.is_set():
                 self._cancel_and_notify()

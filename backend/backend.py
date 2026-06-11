@@ -1,6 +1,7 @@
 import sys
 import io
 import json
+import re
 import threading
 import queue
 import os
@@ -390,6 +391,24 @@ def wake_listener_thread():
             print(f"[Backend] 音频流错误: {e}", file=sys.stderr)
             time.sleep(1)
 
+def _is_valid_date_str(date_str):
+    """检查日期字符串是否为合法的 YYYY-MM-DD HH:MM 或 YYYY-MM-DD 格式。"""
+    if not date_str or not isinstance(date_str, str):
+        return False
+    m = re.match(r'^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}))?$', date_str.strip())
+    if not m:
+        return False
+    try:
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if m.group(4):
+            hour, minute = int(m.group(4)), int(m.group(5))
+            datetime.datetime(year, month, day, hour, minute)
+        else:
+            datetime.datetime(year, month, day)
+        return True
+    except ValueError:
+        return False
+
 # ================= 长期记忆管理器 =================
 class MemoryManager:
     def __init__(self, db_path: str, api_key: str):
@@ -589,16 +608,33 @@ class MemoryManager:
         now = datetime.datetime.fromtimestamp(timestamp)
         weekday_zh = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
         current_time_str = now.strftime("%Y年%m月%d日") + f" {weekday_zh[now.weekday()]} " + now.strftime("%H:%M")
+        # 添加日期参考表
+        try:
+            from mcp.tools.time_resolver import build_date_reference, pre_resolve_message
+            current_time_str += "\n日期参考：" + build_date_reference(now)
+
+            # 预解析用户消息中的相对时间
+            resolved_info = pre_resolve_message(user_message, now)
+            user_message_for_llm = resolved_info.get("enriched_message", user_message)
+            resolved_best_date = resolved_info.get("best_date_str")
+        except ImportError:
+            user_message_for_llm = user_message
+            resolved_best_date = None
 
         system_prompt = f"""你是一个星际争霸泰伦帝国AI副官的行动中枢，专门处理待办事项。
     当前时间：{current_time_str}
 
     分析规则：
-    - 如果指挥官的发言明确要求“提醒”、“别忘了”、“记下来”、“备忘”、“提醒我”等，或者描述了一个需要未来提醒的事项，生成**添加**动作。
-    - 如果发言是在**查询**待办（如“有什么安排”、“待办列表”、“今天要做什么”），生成**列表查询**动作。
+    - 如果指挥官的发言明确要求"提醒"、"别忘了"、"记下来"、"备忘"、"提醒我"等，或者描述了一个需要未来提醒的事项，生成**添加**动作。
+    - 如果发言是在**查询**待办（如"有什么安排"、"待办列表"、"今天要做什么"），生成**列表查询**动作。
     - 如果两者都不是，则 todo_action 为 null。
 
-    **添加动作**：需要推理出 content（完整的提醒描述）和 due_date（格式YYYY-MM-DD HH:MM，根据当前时间推算，未指定具体小时则默认为 09:00）。
+    **时间推算规则（严格遵守）**：
+    - 日期参考表中已给出本周和下周每天的具体日期，请直接查表使用。
+    - 用户消息中的相对时间表达已被替换为内联绝对日期（如"2026-06-12(周五)"），必须直接使用这些绝对日期，禁止重新推算。
+    - "下下周四"="下下周周四"=14天后的周四。
+
+    **添加动作**：需要推理出 content（完整的提醒描述）和 due_date（格式YYYY-MM-DD HH:MM，根据当前时间和日期参考表推算，未指定具体小时则默认为 09:00）。
     **列表查询**：只需返回 type="list"，不需要 items。
 
     输出格式：严格JSON，结构如下：
@@ -612,6 +648,7 @@ class MemoryManager:
     注意：
     - 如果没有TODO操作，todo_action 必须为 null。
     - 不要在输出中包含任何记忆提取相关内容。
+    - due_date 必须是有效的未来日期，格式严格为 YYYY-MM-DD HH:MM。
     """
 
         # 传入现有待办列表供过期检测
@@ -628,7 +665,7 @@ class MemoryManager:
                 model="glm-4-flash",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"指挥官的发言：{user_message}\n{todo_list_hint}\n\n请分析并输出 JSON。"}
+                    {"role": "user", "content": f"指挥官的发言：{user_message_for_llm}\n{todo_list_hint}\n\n请分析并输出 JSON。"}
                 ],
                 temperature=0.1,
                 max_tokens=600
@@ -638,7 +675,16 @@ class MemoryManager:
             json_end = raw.rfind('}') + 1
             if json_start != -1 and json_end > json_start:
                 data = json.loads(raw[json_start:json_end])
-                return data.get("todo_action")
+                todo_action = data.get("todo_action")
+                # 校验并修正 GLM 返回的 due_date
+                if todo_action and todo_action.get("type") == "add" and resolved_best_date:
+                    items = todo_action.get("items", [])
+                    for item in items:
+                        due_date = item.get("due_date", "")
+                        if not due_date or not _is_valid_date_str(due_date):
+                            item["due_date"] = resolved_best_date
+                            print(f"[TODO] Legacy: due_date无效，回退到预解析日期'{resolved_best_date}'", file=sys.stderr, flush=True)
+                return todo_action
             return None
         except Exception as e:
             print(f"[TODO] GLM纯TODO分析失败: {e}", file=sys.stderr)
@@ -1083,6 +1129,12 @@ def chat_inference_thread():
             now = datetime.datetime.now()
             weekday_zh = {0: "星期一",1: "星期二",2: "星期三",3: "星期四",4: "星期五",5: "星期六",6: "星期日"}
             current_time_str = now.strftime("%Y年%m月%d日 ") + weekday_zh[now.weekday()] + now.strftime(" %H点%M分")
+            # 添加日期参考表，帮助本地LLM准确理解相对时间
+            try:
+                from mcp.tools.time_resolver import build_date_reference
+                current_time_str += "\n" + build_date_reference(now)
+            except ImportError:
+                pass
             augmented_system = SYSTEM_PROMPT + f"\n\n【当前帝国标准时间】：{current_time_str}"
 
             # 检索长期记忆
