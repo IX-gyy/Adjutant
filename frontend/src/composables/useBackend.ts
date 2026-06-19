@@ -241,6 +241,23 @@ export function getMemories(query?: string, after?: number, before?: number) {
   sendToBackend({ action: 'get_memories', query, after, before })
 }
 
+/**
+ * 删除单条长期记忆
+ * @param memId 记忆 ID
+ */
+export function deleteMemory(memId: string) {
+  console.log('[useBackend] 删除记忆:', memId)
+  sendToBackend({ action: 'delete_memory', mem_id: memId })
+}
+
+/**
+ * 清空所有长期记忆（不可逆）
+ */
+export function clearAllMemories() {
+  console.log('[useBackend] 清空所有长期记忆')
+  sendToBackend({ action: 'clear_all_memories' })
+}
+
 // ================= 系统状态相关 API =================
 
 import type { SystemStatusResultEvent } from '../types'
@@ -302,6 +319,8 @@ export function useBackend() {
     completeTodo,
     deleteTodo,
     getMemories,
+    deleteMemory,
+    clearAllMemories,
     showWindow,
     hideWindow,
     minimizeWindow,
@@ -368,6 +387,8 @@ export function useBackend() {
     completeTodo,
     deleteTodo,
     getMemories,
+    deleteMemory,
+    clearAllMemories,
     showWindow,
     hideWindow,
     minimizeWindow,

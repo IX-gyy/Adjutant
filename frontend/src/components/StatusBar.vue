@@ -75,7 +75,7 @@
           />
         </svg>
       </button>
-      <button class="control-btn clear-history" @click="handleClearHistory" title="清除历史">
+      <button class="control-btn clear-history" @click="handleClearHistory" title="清除当前对话 (不影响长期记忆)">
         <svg viewBox="0 0 24 24" width="12" height="12">
           <path
             fill="currentColor"
@@ -163,11 +163,11 @@ function openSettings() {
 
 function handleClearHistory() {
   Modal.confirm({
-    title: '确认清除历史记录？',
+    title: '确认清除当前对话？',
     icon: h(ExclamationCircleOutlined),
-    content: '此操作将清空所有对话历史，无法恢复。',
-    okText: '清除',
-    okType: 'danger',
+    content: '此操作仅清空当前对话历史，不会删除 AI 对您的长期记忆。如需管理长期记忆，请前往系统设置。',
+    okText: '清除对话',
+    okType: 'warning',
     cancelText: '取消',
     onOk() {
       clearHistory()

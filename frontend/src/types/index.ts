@@ -203,11 +203,40 @@ export interface TodoUpdatedEvent extends BaseBackendEvent {
 }
 
 /**
+ * 长期记忆条目（含完整元数据）
+ */
+export interface MemoryItem {
+  id: string
+  content: string
+  timestamp: number
+  importance: number
+  type: string  // attribute|preference|habit|plan|event|opinion|fact
+  score?: number  // 语义检索时的相关性评分
+}
+
+/**
  * 长期记忆列表事件
  */
 export interface MemoriesListEvent extends BaseBackendEvent {
   event: 'memories_list'
-  memories: string[]
+  memories: MemoryItem[] | string[]
+  total?: number  // 总记忆数量（透明度模式）
+}
+
+/**
+ * 单条记忆删除事件
+ */
+export interface MemoryDeletedEvent extends BaseBackendEvent {
+  event: 'memory_deleted'
+  mem_id: string
+}
+
+/**
+ * 所有记忆清空事件
+ */
+export interface MemoriesClearedEvent extends BaseBackendEvent {
+  event: 'memories_cleared'
+  count: number
 }
 
 /**
@@ -281,6 +310,8 @@ export type BackendEvent =
   | TodoListEvent
   | TodoUpdatedEvent
   | MemoriesListEvent
+  | MemoryDeletedEvent
+  | MemoriesClearedEvent
   | CountdownCompleteEvent
   | SystemStatusResultEvent
   | WeatherResultEvent
@@ -422,6 +453,21 @@ export interface GetMemoriesAction extends BaseFrontendAction {
 }
 
 /**
+ * 删除单条记忆指令
+ */
+export interface DeleteMemoryAction extends BaseFrontendAction {
+  action: 'delete_memory'
+  mem_id: string
+}
+
+/**
+ * 清空所有长期记忆指令
+ */
+export interface ClearAllMemoriesAction extends BaseFrontendAction {
+  action: 'clear_all_memories'
+}
+
+/**
  * 查询系统状态指令
  */
 export interface GetSystemStatusAction extends BaseFrontendAction {
@@ -530,6 +576,8 @@ export type FrontendAction =
   | CompleteTodoAction
   | DeleteTodoAction
   | GetMemoriesAction
+  | DeleteMemoryAction
+  | ClearAllMemoriesAction
   | GetSystemStatusAction
   | QueryWeatherAction
   | UpdateSettingsAction

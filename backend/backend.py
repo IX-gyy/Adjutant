@@ -443,6 +443,7 @@ class MemoryManager:
         self.extraction_counter = 0
         self.extraction_interval = MEMORY_EXTRACTION_INTERVAL  # 每3轮自动提取一次
         self.force_keywords = ["记住", "一定要记住", "这个很重要"]
+        self._cached_summary = ""  # 渐进式对话摘要缓存
         print("[记忆] 长期记忆管理器已就绪，后台提取线程已启动", file=sys.stderr)
 
     def add_conversation_to_queue(self, messages: list, timestamp: float = None):
@@ -453,7 +454,7 @@ class MemoryManager:
         with self.extraction_lock:
             self.extraction_queue.append((messages, timestamp)) # 存入元组
 
-    def retrieve_relevant(self, query: str, k: int = 3, after: float = None, before: float = None) -> list:
+    def retrieve_relevant(self, query: str, k: int = 3, after: float = None, before: float = None, min_score: float = 0.4) -> list:
         if not self.enabled or self.collection.count() == 0:
             return []
         where_filter = {}
@@ -471,18 +472,116 @@ class MemoryManager:
                     results = self.collection.query(query_texts=[query], n_results=k)
                 memories = []
                 for i, doc in enumerate(results['documents'][0]):
-                    if results['distances'][0][i] < 1.5:
-                        memories.append(doc)
+                    distance = results['distances'][0][i]
+                    meta = results['metadatas'][0][i] if results['metadatas'] else {}
+                    importance = meta.get('importance', 5)
+                    recency_ts = meta.get('timestamp', time.time())
+                    # 语义相似度：cosine distance → similarity (0~1)
+                    semantic_score = max(0, 1.0 - distance)
+                    # 时间衰减：30天内权重线性下降，超过30天归零
+                    age_days = (time.time() - recency_ts) / 86400
+                    recency_score = max(0, 1.0 - age_days / 30.0)
+                    # 重要性：1-10 → 0-1
+                    importance_score = importance / 10.0
+                    # 加权组合
+                    combined = 0.5 * semantic_score + 0.25 * recency_score + 0.25 * importance_score
+                    if combined >= min_score:
+                        memories.append({
+                            "id": results['ids'][0][i],
+                            "content": doc,
+                            "score": round(combined, 3),
+                            "type": meta.get('type', 'fact'),
+                            "importance": importance,
+                            "timestamp": recency_ts
+                        })
+                # 按综合评分降序
+                memories.sort(key=lambda m: m['score'], reverse=True)
                 return memories
             except Exception as e:
                 print(f"[记忆] 检索失败: {e}", file=sys.stderr)
                 return []
 
     def get_all_memories(self) -> list:
+        """返回所有记忆的纯文本列表（向后兼容）"""
+        mems = self.get_all_memories_with_metadata()
+        return [m['content'] for m in mems]
+
+    def get_all_memories_with_metadata(self) -> list:
+        """返回所有记忆的完整元数据列表，按时间倒序"""
         if not self.enabled or self.collection.count() == 0:
             return []
         with self.collection_lock:
-            return self.collection.get()['documents']
+            data = self.collection.get()
+            results = []
+            for i, doc_id in enumerate(data['ids']):
+                meta = data['metadatas'][i] if data['metadatas'] else {}
+                results.append({
+                    "id": doc_id,
+                    "content": data['documents'][i],
+                    "timestamp": meta.get("timestamp", 0),
+                    "importance": meta.get("importance", 5),
+                    "type": meta.get("type", "fact")
+                })
+            results.sort(key=lambda x: x['timestamp'], reverse=True)
+            return results
+
+    def delete_memory(self, mem_id: str) -> bool:
+        """删除单条记忆"""
+        if not self.enabled:
+            return False
+        with self.collection_lock:
+            try:
+                self.collection.delete(ids=[mem_id])
+                print(f"[记忆] 已删除: {mem_id}", file=sys.stderr)
+                return True
+            except Exception as e:
+                print(f"[记忆] 删除失败: {e}", file=sys.stderr)
+                return False
+
+    def clear_all_memories(self) -> int:
+        """清空所有记忆，返回删除数量"""
+        if not self.enabled:
+            return 0
+        with self.collection_lock:
+            try:
+                count = self.collection.count()
+                all_ids = self.collection.get()['ids']
+                if all_ids:
+                    self.collection.delete(ids=all_ids)
+                print(f"[记忆] 已清空所有记忆 (共 {count} 条)", file=sys.stderr)
+                return count
+            except Exception as e:
+                print(f"[记忆] 清空失败: {e}", file=sys.stderr)
+                return 0
+
+    def summarize_older_turns(self, chat_history: list, keep_last_n: int = 3) -> str:
+        """将早期对话轮次压缩为摘要，保留最近N轮原始消息。
+        返回摘要字符串，或空字符串（如果对话不够长或API不可用）。"""
+        if not self.enabled:
+            return ""
+        total_rounds = len(chat_history) // 2
+        if total_rounds <= keep_last_n:
+            return ""
+        older = chat_history[:-(keep_last_n * 2)]
+        if not older:
+            return ""
+        conv_text = "\n".join([f"{m['role']}: {m['content']}" for m in older])
+        try:
+            response = self.zhipu_client.chat.completions.create(
+                model="glm-4-flash",
+                messages=[
+                    {"role": "system", "content": "将以下对话历史压缩为一段简洁的摘要（不超过150字），只保留关键信息和上下文。不要遗漏指挥官提到的个人信息、偏好和计划。"},
+                    {"role": "user", "content": conv_text}
+                ],
+                temperature=0.2,
+                max_tokens=200
+            )
+            summary = response.choices[0].message.content.strip()
+            print(f"[记忆] 已生成对话摘要 ({len(older)}条 → {len(summary)}字)", file=sys.stderr)
+            return summary
+        except Exception as e:
+            print(f"[记忆] 摘要生成失败: {e}", file=sys.stderr)
+            return ""
 
     def _extraction_worker(self):
         while True:
@@ -500,7 +599,8 @@ class MemoryManager:
                             text = mem.get("content", "")
                             importance = mem.get("importance", 5)
                             mem_ts = mem.get("timestamp", conv_ts)
-                            self._add_memory(text, mem_ts, importance)
+                            mem_type = mem.get("type", "fact")
+                            self._add_memory(text, mem_ts, importance, mem_type)
                         else:
                             self._add_memory(mem, conv_ts)
                 except Exception as e:
@@ -567,7 +667,7 @@ class MemoryManager:
             print(f"[记忆] 智谱API调用出错: {e}", file=sys.stderr)
             return []
 
-    def _add_memory(self, text: str, timestamp: float = None, importance: int = 5):
+    def _add_memory(self, text: str, timestamp: float = None, importance: int = 5, mem_type: str = "fact"):
         if importance < 3:
             return
         if timestamp is None:
@@ -577,8 +677,8 @@ class MemoryManager:
             if any(self._is_similar(text, m) for m in existing):
                 return
             mem_id = f"mem_{hash(text)}_{int(timestamp)}"
-            self.collection.add(documents=[text], ids=[mem_id], metadatas=[{"timestamp": timestamp, "importance": importance}])
-            print(f"[记忆] 已存储: {text} (重要性={importance})", file=sys.stderr)
+            self.collection.add(documents=[text], ids=[mem_id], metadatas=[{"timestamp": timestamp, "importance": importance, "type": mem_type}])
+            print(f"[记忆] 已存储: [{mem_type}] {text} (重要性={importance})", file=sys.stderr)
 
     def _is_similar(self, a: str, b: str, threshold: float = 0.8) -> bool:
         return difflib.SequenceMatcher(None, a, b).ratio() > threshold
@@ -1087,7 +1187,14 @@ def _generate_with_glm(user_message, memories):
 - 将日常琐事类比为战术行动
 - 回复2-4句话，40-80字"""
     if memories:
-        system_prompt += "\n\n【关于指挥官的已知信息】\n" + "\n".join([f"- {m}" for m in memories])
+        # 支持新的 dict 格式和旧的字符串格式
+        mem_texts = []
+        for m in memories:
+            if isinstance(m, dict):
+                mem_texts.append(m.get('content', str(m)))
+            else:
+                mem_texts.append(str(m))
+        system_prompt += "\n\n【关于指挥官的已知信息】\n" + "\n".join([f"- {t}" for t in mem_texts])
     try:
         response = memory_manager.zhipu_client.chat.completions.create(
             model="glm-4-flash",
@@ -1125,6 +1232,13 @@ def chat_inference_thread():
                 chat_history.append({"role": "user", "content": user_message, "timestamp": int(time.time() * 1000)})
                 truncate_chat_history()
 
+            # ---- 生成对话摘要（早期轮次压缩） ----
+            conversation_summary = ""
+            if memory_manager and memory_manager.enabled and len(chat_history) > 6:
+                conversation_summary = memory_manager.summarize_older_turns(chat_history, keep_last_n=3)
+                if conversation_summary:
+                    memory_manager._cached_summary = conversation_summary
+
             # ---- 构建增强系统提示（时间注入 + 长期记忆） ----
             now = datetime.datetime.now()
             weekday_zh = {0: "星期一",1: "星期二",2: "星期三",3: "星期四",4: "星期五",5: "星期六",6: "星期日"}
@@ -1137,25 +1251,49 @@ def chat_inference_thread():
                 pass
             augmented_system = SYSTEM_PROMPT + f"\n\n【当前帝国标准时间】：{current_time_str}"
 
+            # 注入对话摘要
+            if conversation_summary:
+                augmented_system += f"\n\n【历史对话摘要（早期轮次）】\n{conversation_summary}"
+
             # 检索长期记忆
             memories = []
             if memory_manager and memory_manager.enabled:
                 memories = memory_manager.retrieve_relevant(user_message, k=3)
                 if memories:
-                    attributes, events = [], []
+                    # 按类型分组，构建结构化记忆注入
+                    attributes, events, plans, preferences = [], [], [], []
                     for mem in memories:
-                        if mem.startswith("指挥官属性："):
-                            attributes.append(mem.replace("指挥官属性：", ""))
-                        elif mem.startswith("指挥官事件："):
-                            events.append(mem.replace("指挥官事件：", ""))
+                        content = mem.get('content', mem) if isinstance(mem, dict) else mem
+                        mem_type = mem.get('type', 'fact') if isinstance(mem, dict) else 'fact'
+                        if mem_type in ('attribute', 'fact'):
+                            attributes.append(content)
+                        elif mem_type == 'event':
+                            events.append(content)
+                        elif mem_type == 'plan':
+                            plans.append(content)
+                        elif mem_type == 'preference':
+                            preferences.append(content)
+                        elif mem_type == 'habit':
+                            attributes.append(content)
+                        elif mem_type == 'opinion':
+                            attributes.append(content)
                         else:
-                            # 兼容旧记忆格式，也归入属性
-                            attributes.append(mem)
+                            # 兼容旧格式：按前缀分类
+                            if content.startswith("指挥官属性："):
+                                attributes.append(content.replace("指挥官属性：", ""))
+                            elif content.startswith("指挥官事件："):
+                                events.append(content.replace("指挥官事件：", ""))
+                            else:
+                                attributes.append(content)
                     parts = []
                     if attributes:
                         parts.append("【关于指挥官的已知信息】\n" + "\n".join([f"- {a}" for a in attributes]))
+                    if preferences:
+                        parts.append("【指挥官的偏好】\n" + "\n".join([f"- {p}" for p in preferences]))
                     if events:
                         parts.append("【指挥官近期的关键事件】\n" + "\n".join([f"- {e}" for e in events]))
+                    if plans:
+                        parts.append("【指挥官的计划安排】\n" + "\n".join([f"- {p}" for p in plans]))
                     if parts:
                         augmented_system += "\n\n" + "\n\n".join(parts)
 
@@ -1438,11 +1576,15 @@ def main_thread():
                 tts_queue.put({"type": "text", "content": text})
 
             elif action == "clear_history":
+                # 仅清除当前对话历史，不影响长期记忆
                 with chat_lock:
                     chat_history = []
                 save_chat_history()
                 if mcp_manager:
                     mcp_manager.pending_todo_context = None
+                # 清除缓存的对话摘要
+                if memory_manager and hasattr(memory_manager, '_cached_summary'):
+                    memory_manager._cached_summary = ""
                 send_msg_to_electron({"event": "history_cleared"})
 
             elif action == "get_history":
@@ -1693,16 +1835,44 @@ def main_thread():
                     print(f"[Backend] 天气查询失败: {e}", file=sys.stderr)
                     send_msg_to_electron({"event": "weather_result", "error": str(e)})
 
-            # ---------- 新增：长期记忆查询 ----------
+            # ---------- 长期记忆管理 ----------
             elif action == "get_memories":
                 if not memory_manager or not memory_manager.enabled:
                     send_msg_to_electron({"event": "error", "msg": "长期记忆系统未就绪"})
                     continue
                 query = msg.get("query")
-                after = msg.get("after")   # 可选，unix时间戳
-                before = msg.get("before")
-                mems = memory_manager.retrieve_relevant(query or "", k=5, after=after, before=before)
-                send_msg_to_electron({"event": "memories_list", "memories": mems})
+                if query:
+                    # 语义搜索模式
+                    after = msg.get("after")
+                    before = msg.get("before")
+                    mems = memory_manager.retrieve_relevant(query, k=5, after=after, before=before)
+                    send_msg_to_electron({"event": "memories_list", "memories": mems})
+                else:
+                    # 透明度模式：返回所有记忆（含完整元数据）
+                    mems = memory_manager.get_all_memories_with_metadata()
+                    total = memory_manager.collection.count() if memory_manager.collection else 0
+                    send_msg_to_electron({"event": "memories_list", "memories": mems, "total": total})
+
+            elif action == "delete_memory":
+                if not memory_manager or not memory_manager.enabled:
+                    send_msg_to_electron({"event": "error", "msg": "长期记忆系统未就绪"})
+                    continue
+                mem_id = msg.get("mem_id")
+                if not mem_id:
+                    send_msg_to_electron({"event": "error", "msg": "缺少 mem_id 参数"})
+                    continue
+                ok = memory_manager.delete_memory(mem_id)
+                if ok:
+                    send_msg_to_electron({"event": "memory_deleted", "mem_id": mem_id})
+                else:
+                    send_msg_to_electron({"event": "error", "msg": "记忆删除失败"})
+
+            elif action == "clear_all_memories":
+                if not memory_manager or not memory_manager.enabled:
+                    send_msg_to_electron({"event": "error", "msg": "长期记忆系统未就绪"})
+                    continue
+                count = memory_manager.clear_all_memories()
+                send_msg_to_electron({"event": "memories_cleared", "count": count})
         except Exception as e:
             print(f"[Backend] 指令处理错误: {e}", file=sys.stderr)
             time.sleep(0.01)

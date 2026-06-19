@@ -140,6 +140,65 @@
             <span class="form-hint">AI 天气查询和天气面板将默认使用此城市</span>
           </div>
         </div>
+
+        <!-- 长期记忆管理区域 -->
+        <div class="settings-section">
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/>
+            </svg>
+            长期记忆管理
+          </h3>
+
+          <div class="memory-stats">
+            <div class="stat-item">
+              <span class="stat-label">已存储记忆</span>
+              <span class="stat-value">{{ memoryCount }} 条</span>
+            </div>
+            <button class="btn-load" @click="loadMemories" :disabled="loadingMemories">
+              {{ loadingMemories ? '加载中...' : (memoriesLoaded ? '刷新记忆列表' : '查看所有记忆') }}
+            </button>
+          </div>
+
+          <!-- 记忆列表 -->
+          <div v-if="memoriesLoaded && memories.length > 0" class="memory-list">
+            <div
+              v-for="mem in memories"
+              :key="mem.id"
+              class="memory-item"
+            >
+              <div class="memory-type-badge">{{ getMemoryTypeLabel(mem.type || 'fact') }}</div>
+              <div class="memory-content">{{ mem.content }}</div>
+              <div class="memory-meta">
+                <span class="memory-importance" :title="`重要性: ${mem.importance}/10`">
+                  {{ '★'.repeat(Math.round((mem.importance || 5) / 2)) }}{{ '☆'.repeat(5 - Math.round((mem.importance || 5) / 2)) }}
+                </span>
+                <span class="memory-date">{{ formatMemoryDate(mem.timestamp) }}</span>
+              </div>
+              <button class="memory-delete-btn" @click="deleteSingleMemory(mem.id)" title="删除此记忆">
+                <svg viewBox="0 0 24 24" width="10" height="10">
+                  <path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div v-else-if="memoriesLoaded && memories.length === 0" class="memory-empty">
+            <span>暂无长期记忆</span>
+            <span class="hint">AI 会在对话过程中自动提取有价值的信息</span>
+          </div>
+
+          <!-- 危险操作区 -->
+          <div class="danger-zone" v-if="memoryCount > 0">
+            <div class="danger-zone-label">危险操作</div>
+            <button class="btn-danger" @click="handleClearAllMemories">
+              <svg viewBox="0 0 24 24" width="14" height="14">
+                <path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+              </svg>
+              删除所有长期记忆
+            </button>
+          </div>
+        </div>
       </div>
 
       <div class="settings-footer">
@@ -156,10 +215,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, h } from 'vue'
 import { settings, saveSettings as saveSettingsToStorage, type Settings } from '../composables/useSettings'
 import { onBackendEvent, sendToBackend } from '../composables/useBackend'
-import { notification } from 'ant-design-vue'
+import { notification, Modal } from 'ant-design-vue'
+import { ExclamationCircleOutlined } from '@ant-design/icons-vue'
+import type { MemoryItem } from '../types'
 
 interface Props {
   visible: boolean
@@ -219,6 +280,122 @@ const qweatherFilled = computed(() =>
 
 // 百度千帆 Key 是否填写
 const qianfanKeyFilled = computed(() => formData.value.qianfanApiKey.trim() !== '')
+
+// ========== 长期记忆管理状态 ==========
+const memories = ref<MemoryItem[]>([])
+const memoryCount = ref(0)
+const memoriesLoaded = ref(false)
+const loadingMemories = ref(false)
+
+function loadMemories() {
+  loadingMemories.value = true
+  sendToBackend({ action: 'get_memories' })
+
+  const unsubscribe = onBackendEvent((event: any) => {
+    if (event.event === 'memories_list') {
+      unsubscribe()
+      loadingMemories.value = false
+      memoriesLoaded.value = true
+      if (Array.isArray(event.memories)) {
+        const list = event.memories as any[]
+        if (list.length > 0 && typeof list[0] === 'object') {
+          memories.value = list as MemoryItem[]
+        } else {
+          memories.value = list.map((content: string, idx: number) => ({
+            id: `legacy_${idx}`,
+            content,
+            timestamp: 0,
+            importance: 5,
+            type: 'fact'
+          }))
+        }
+      }
+      memoryCount.value = event.total || memories.value.length
+    }
+  })
+
+  setTimeout(() => {
+    if (loadingMemories.value) {
+      loadingMemories.value = false
+      notification.error({ message: '加载超时', description: '无法获取记忆列表' })
+    }
+  }, 10000)
+}
+
+function deleteSingleMemory(memId: string) {
+  Modal.confirm({
+    title: '确认删除此记忆？',
+    icon: h(ExclamationCircleOutlined),
+    content: '此操作不可撤销。',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk() {
+      sendToBackend({ action: 'delete_memory', mem_id: memId })
+      memories.value = memories.value.filter(m => m.id !== memId)
+      memoryCount.value = Math.max(0, memoryCount.value - 1)
+    }
+  })
+}
+
+function handleClearAllMemories() {
+  Modal.confirm({
+    title: '确认删除所有长期记忆？',
+    icon: h(ExclamationCircleOutlined),
+    content: '此操作将永久删除 AI 对您的所有记忆（包括偏好、习惯、计划等），且不可恢复。当前对话不受影响。',
+    okText: '全部删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk() {
+      sendToBackend({ action: 'clear_all_memories' })
+      const unsubscribe = onBackendEvent((event: any) => {
+        if (event.event === 'memories_cleared') {
+          unsubscribe()
+          memories.value = []
+          memoryCount.value = 0
+          memoriesLoaded.value = true
+          notification.success({
+            message: '记忆已清空',
+            description: `已删除 ${event.count} 条长期记忆`,
+            duration: 3
+          })
+        }
+      })
+    }
+  })
+}
+
+function getMemoryTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    attribute: '属性',
+    preference: '偏好',
+    habit: '习惯',
+    plan: '计划',
+    event: '事件',
+    opinion: '观点',
+    fact: '信息'
+  }
+  return labels[type] || '信息'
+}
+
+function formatMemoryDate(timestamp: number): string {
+  if (!timestamp) return ''
+  const d = new Date(timestamp * 1000)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// 打开设置面板时自动获取记忆数量
+watch(() => props.visible, (newVisible) => {
+  if (newVisible) {
+    const unsub = onBackendEvent((event: any) => {
+      if (event.event === 'memories_list') {
+        unsub()
+        memoryCount.value = event.total || 0
+      }
+    })
+    sendToBackend({ action: 'get_memories' })
+  }
+})
 
 // 关闭面板
 function closePanel() {
@@ -536,5 +713,202 @@ function listenTestResult(type: 'glm' | 'qweather' | 'qianfan') {
 .btn-secondary:hover {
   background: var(--terran-bg-hover);
   color: var(--terran-text-primary);
+}
+
+/* ==================== 长期记忆管理样式 ==================== */
+
+.memory-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--terran-spacing-sm) var(--terran-spacing-md);
+  background: var(--terran-bg-tertiary);
+  border-radius: var(--terran-radius-md);
+  margin-bottom: var(--terran-spacing-md);
+}
+
+.stat-item {
+  display: flex;
+  gap: var(--terran-spacing-sm);
+  align-items: center;
+}
+
+.stat-label {
+  font-size: var(--terran-font-size-sm);
+  color: var(--terran-text-secondary);
+}
+
+.stat-value {
+  font-family: var(--terran-font-mono);
+  font-size: var(--terran-font-size-md);
+  font-weight: var(--terran-font-weight-bold);
+  color: var(--terran-primary);
+}
+
+.btn-load {
+  padding: 4px 12px;
+  border: 1px solid var(--terran-border-primary);
+  background: var(--terran-bg-secondary);
+  color: var(--terran-text-secondary);
+  font-size: var(--terran-font-size-xs);
+  cursor: pointer;
+  border-radius: var(--terran-radius-md);
+  transition: all 0.2s ease;
+}
+
+.btn-load:hover:not(:disabled) {
+  border-color: var(--terran-primary);
+  color: var(--terran-primary);
+}
+
+.btn-load:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 记忆列表 */
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--terran-spacing-sm);
+  max-height: 260px;
+  overflow-y: auto;
+  margin-bottom: var(--terran-spacing-md);
+}
+
+.memory-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--terran-spacing-xs);
+  padding: var(--terran-spacing-sm) var(--terran-spacing-md);
+  border-radius: var(--terran-radius-md);
+  border-left: 3px solid var(--terran-border-primary);
+  background: var(--terran-bg-tertiary);
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.memory-item:hover {
+  background: var(--terran-bg-quaternary);
+}
+
+.memory-type-badge {
+  padding: 1px 6px;
+  border-radius: var(--terran-radius-sm);
+  font-size: 10px;
+  font-weight: var(--terran-font-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--terran-bg-secondary);
+  color: var(--terran-text-secondary);
+  flex-shrink: 0;
+}
+
+.memory-content {
+  flex: 1;
+  font-size: var(--terran-font-size-sm);
+  color: var(--terran-text-primary);
+  line-height: 1.4;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.memory-meta {
+  display: flex;
+  gap: var(--terran-spacing-md);
+  align-items: center;
+  width: 100%;
+  margin-top: 2px;
+}
+
+.memory-importance {
+  font-size: 10px;
+  color: #d4a017;
+  letter-spacing: 1px;
+}
+
+.memory-date {
+  font-size: 10px;
+  color: var(--terran-text-tertiary);
+  font-family: var(--terran-font-mono);
+}
+
+.memory-delete-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--terran-text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--terran-radius-sm);
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+.memory-item:hover .memory-delete-btn {
+  opacity: 1;
+}
+
+.memory-delete-btn:hover {
+  background: #ff4d4f;
+  color: #fff;
+}
+
+.memory-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--terran-spacing-lg);
+  color: var(--terran-text-tertiary);
+  font-size: var(--terran-font-size-sm);
+}
+
+.memory-empty .hint {
+  font-size: var(--terran-font-size-xs);
+  margin-top: var(--terran-spacing-xs);
+}
+
+/* 危险操作区 */
+.danger-zone {
+  padding: var(--terran-spacing-md);
+  border: 1px solid #ff4d4f;
+  border-radius: var(--terran-radius-md);
+  background: rgba(255, 77, 79, 0.05);
+}
+
+.danger-zone-label {
+  font-size: var(--terran-font-size-xs);
+  color: #ff4d4f;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: var(--terran-spacing-sm);
+}
+
+.btn-danger {
+  display: flex;
+  align-items: center;
+  gap: var(--terran-spacing-xs);
+  padding: var(--terran-spacing-sm) var(--terran-spacing-md);
+  border: 1px solid #ff4d4f;
+  background: transparent;
+  color: #ff4d4f;
+  font-size: var(--terran-font-size-sm);
+  cursor: pointer;
+  border-radius: var(--terran-radius-md);
+  transition: all 0.2s ease;
+  width: 100%;
+  justify-content: center;
+}
+
+.btn-danger:hover {
+  background: #ff4d4f;
+  color: #fff;
 }
 </style>
