@@ -11,6 +11,7 @@ from .tools.system_tool import SystemTool
 from .tools.time_tool import TimeTool
 from .tools.weather_tool import WeatherTool
 from .tools.web_search_tool import WebSearchTool
+from .tools.forum_search_tool import ForumSearchTool
 from .tools.time_resolver import pre_resolve_message, build_date_reference
 
 
@@ -35,6 +36,7 @@ INTENT_SIMPLE_DESC = {
     "system_status": "用户想了解电脑系统运行状态",
     "time_tool": "用户想查询时间、日期或使用计时功能",
     "web_search": "用户想在网络上搜索信息",
+    "forum_search": "用户想搜索集市/论坛的帖子",
 }
 
 # ============================================================================
@@ -81,6 +83,15 @@ TRANSITION_TEXTS = {
     "system_status": "正在扫描帝国终端运行状态，指挥官，请稍等……",
     "time_tool": "正在校准帝国标准时间，指挥官，请稍等……",
     "web_search": "正在连接星际情报网络，指挥官，请稍等……",
+    "forum_search": "正在检索集市帖子，指挥官，请稍等……",
+}
+
+# 结果返回后的 TTS 引导语（用于结果较长、不适合完整朗读的工具）
+TTS_GUIDANCE_TEXTS = {
+    "forum_search": "指挥官，集市情报检索完毕，请查看屏幕上的详细结果。",
+    "web_search": "指挥官，网络情报检索完毕，请查看屏幕上的详细结果。",
+    "weather": "指挥官，气象情报已获取，请查看屏幕上的详细结果。",
+    "system_status": "指挥官，系统扫描完成，请查看屏幕上的报告。",
 }
 
 # ============================================================================
@@ -123,6 +134,7 @@ class MCPManager:
         self.tools["system_status"] = SystemTool()
         self.tools["time_tool"] = TimeTool(send_msg_fn, tts_queue)
         self.tools["web_search"] = WebSearchTool(zhipu_client)
+        self.tools["forum_search"] = ForumSearchTool(zhipu_client)
 
     @property
     def enabled(self):
@@ -409,7 +421,12 @@ class MCPManager:
                 self._cancel_and_notify()
                 return
 
-            self.tts_queue.put({"type": "text", "content": result_text})
+            # 部分工具结果较长，TTS 只播报引导语，不朗读完整结果
+            guidance = TTS_GUIDANCE_TEXTS.get(tool_name)
+            if guidance:
+                self.tts_queue.put({"type": "text", "content": guidance})
+            else:
+                self.tts_queue.put({"type": "text", "content": result_text})
 
             with self.state_lock:
                 self._set_substate("playing_tts")

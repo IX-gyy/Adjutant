@@ -120,6 +120,49 @@
           </div>
         </div>
 
+        <!-- 集市帖子搜索（小秋）Section -->
+        <div class="settings-section">
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/>
+            </svg>
+            集市帖子搜索（小秋）
+          </h3>
+
+          <div class="form-group">
+            <label class="form-label">API Token</label>
+            <div class="input-row">
+              <input
+                v-model="formData.forumSearchApiToken"
+                type="password"
+                class="form-input"
+                placeholder="请输入小秋 API Token"
+              />
+              <button
+                class="btn-test"
+                :disabled="!forumSearchTokenFilled || testingForumSearch"
+                @click="testForumSearchKey"
+              >
+                <svg v-if="testingForumSearch" class="spinner" viewBox="0 0 24 24" width="14" height="14">
+                  <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="32" stroke-linecap="round"/>
+                </svg>
+                <span v-else>测试</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">API 地址</label>
+            <input
+              v-model="formData.forumSearchBaseUrl"
+              type="text"
+              class="form-input"
+              placeholder="https://ssemarket.cn"
+            />
+          </div>
+          <span class="form-hint">用于查询集市/论坛的帖子内容。需要从管理员获取 API Token，也可使用本地小秋 Docker 服务（http://127.0.0.1:18080）</span>
+        </div>
+
         <!-- Default City Section -->
         <div class="settings-section">
           <h3 class="section-title">
@@ -237,6 +280,8 @@ const formData = ref<Settings>({
   qweatherApiKey: '',
   qweatherApiHost: '',
   qianfanApiKey: '',
+  forumSearchApiToken: '',
+  forumSearchBaseUrl: 'https://ssemarket.cn',
   defaultCity: '北京'
 })
 
@@ -244,6 +289,7 @@ const formData = ref<Settings>({
 const testingGlm = ref(false)
 const testingQweather = ref(false)
 const testingQianfan = ref(false)
+const testingForumSearch = ref(false)
 
 // 从存储加载数据到表单
 watch(() => props.visible, (newVisible) => {
@@ -253,11 +299,14 @@ watch(() => props.visible, (newVisible) => {
       qweatherApiKey: settings.value.qweatherApiKey,
       qweatherApiHost: settings.value.qweatherApiHost,
       qianfanApiKey: settings.value.qianfanApiKey,
+      forumSearchApiToken: settings.value.forumSearchApiToken,
+      forumSearchBaseUrl: settings.value.forumSearchBaseUrl,
       defaultCity: settings.value.defaultCity
     }
     testingGlm.value = false
     testingQweather.value = false
     testingQianfan.value = false
+    testingForumSearch.value = false
   }
 })
 
@@ -280,6 +329,9 @@ const qweatherFilled = computed(() =>
 
 // 百度千帆 Key 是否填写
 const qianfanKeyFilled = computed(() => formData.value.qianfanApiKey.trim() !== '')
+
+// 集市搜索（小秋）Token 是否填写（可选功能，不加入 isValid 校验）
+const forumSearchTokenFilled = computed(() => formData.value.forumSearchApiToken.trim() !== '')
 
 // ========== 长期记忆管理状态 ==========
 const memories = ref<MemoryItem[]>([])
@@ -447,14 +499,27 @@ function testQianfanKey() {
   listenTestResult('qianfan')
 }
 
+// 测试集市搜索（小秋）API
+function testForumSearchKey() {
+  if (!forumSearchTokenFilled.value) return
+  testingForumSearch.value = true
+  sendToBackend({
+    action: 'test_forum_search_key',
+    api_token: formData.value.forumSearchApiToken,
+    base_url: formData.value.forumSearchBaseUrl
+  })
+  listenTestResult('forum_search')
+}
+
 // 监听测试结果
-function listenTestResult(type: 'glm' | 'qweather' | 'qianfan') {
+function listenTestResult(type: 'glm' | 'qweather' | 'qianfan' | 'forum_search') {
   const unsubscribe = onBackendEvent((event: any) => {
     if (event.event === 'api_key_test_result' && event.type === type) {
       unsubscribe()
       if (type === 'glm') testingGlm.value = false
       else if (type === 'qweather') testingQweather.value = false
-      else testingQianfan.value = false
+      else if (type === 'qianfan') testingQianfan.value = false
+      else testingForumSearch.value = false
 
       if (event.success) {
         notification.success({

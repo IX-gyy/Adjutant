@@ -80,6 +80,13 @@ export interface ChatChunkEvent extends BaseBackendEvent {
 }
 
 /**
+ * 清除已累积的流式输出（本地模型求救切换到 GLM 时使用）
+ */
+export interface ChatChunkClearEvent extends BaseBackendEvent {
+  event: 'chat_chunk_clear'
+}
+
+/**
  * AI对话生成完成事件
  */
 export interface ChatCompleteEvent extends BaseBackendEvent {
@@ -240,6 +247,19 @@ export interface MemoriesClearedEvent extends BaseBackendEvent {
 }
 
 /**
+ * 记忆已更新事件（包括语义更新和矛盾删除）
+ */
+export interface MemoryUpdatedEvent extends BaseBackendEvent {
+  event: 'memory_updated'
+  mem_id: string
+  content?: string       // 存在表示更新，不存在表示删除
+  type?: string
+  importance?: number
+  timestamp?: number
+  deleted?: boolean      // true 表示删除操作
+}
+
+/**
  * 倒计时完成事件
  */
 export interface CountdownCompleteEvent extends BaseBackendEvent {
@@ -295,6 +315,7 @@ export type BackendEvent =
   | WakeEvent
   | TranscriptionResultEvent
   | ChatChunkEvent
+  | ChatChunkClearEvent
   | ChatCompleteEvent
   | ChatCancelledEvent
   | TtsStartedEvent
@@ -312,6 +333,7 @@ export type BackendEvent =
   | MemoriesListEvent
   | MemoryDeletedEvent
   | MemoriesClearedEvent
+  | MemoryUpdatedEvent
   | CountdownCompleteEvent
   | SystemStatusResultEvent
   | WeatherResultEvent
@@ -468,6 +490,17 @@ export interface ClearAllMemoriesAction extends BaseFrontendAction {
 }
 
 /**
+ * 手动更新单条记忆内容
+ */
+export interface UpdateMemoryAction extends BaseFrontendAction {
+  action: 'update_memory'
+  mem_id: string
+  content: string
+  importance?: number
+  type?: string
+}
+
+/**
  * 查询系统状态指令
  */
 export interface GetSystemStatusAction extends BaseFrontendAction {
@@ -493,6 +526,8 @@ export interface UpdateSettingsAction extends BaseFrontendAction {
     qweatherApiKey?: string
     qweatherApiHost?: string
     qianfanApiKey?: string
+    forumSearchApiToken?: string
+    forumSearchBaseUrl?: string
     defaultCity?: string
   }
 }
@@ -547,11 +582,20 @@ export interface TestQianfanKeyAction extends BaseFrontendAction {
 }
 
 /**
+ * 测试集市搜索（小秋）API Key 指令
+ */
+export interface TestForumSearchKeyAction extends BaseFrontendAction {
+  action: 'test_forum_search_key'
+  api_token: string
+  base_url: string
+}
+
+/**
  * API Key 测试结果事件
  */
 export interface ApiKeyTestResultEvent extends BaseBackendEvent {
   event: 'api_key_test_result'
-  type: 'glm' | 'qweather' | 'qianfan'
+  type: 'glm' | 'qweather' | 'qianfan' | 'forum_search'
   success: boolean
   message: string
 }
@@ -578,12 +622,14 @@ export type FrontendAction =
   | GetMemoriesAction
   | DeleteMemoryAction
   | ClearAllMemoriesAction
+  | UpdateMemoryAction
   | GetSystemStatusAction
   | QueryWeatherAction
   | UpdateSettingsAction
   | TestGlmKeyAction
   | TestQweatherKeyAction
   | TestQianfanKeyAction
+  | TestForumSearchKeyAction
 
 // ================= 对话相关类型 =================
 
@@ -683,6 +729,7 @@ export interface ElectronAPI {
   minimizeWindow: () => void
   getBackendPath: () => Promise<string>
   saveTempAudio: (data: ArrayBuffer, fileName: string) => Promise<string>
+  openExternal: (url: string) => void
 }
 
 /**

@@ -1,4 +1,4 @@
-# 阿塔尼斯 AI 语音助手（泰伦帝国副官版） v2.0
+# 阿塔尼斯 AI 语音助手（泰伦帝国副官版） v2.4
 
 基于 Electron + Vue3 + TypeScript + Python 开发的桌面端 AI 语音助手，人设为《星际争霸 2》泰伦帝国机械副官，支持语音唤醒、语音转写、AI 对话（赫尔墨斯长期记忆）、语音合成（TTS）全流程交互。
 
@@ -9,7 +9,8 @@
 3. **AI 对话（升级版）**：
    - **本地副官模型**：基于 Qwen2.5-3B 生成回复，角色扮演稳定，流式输出；
    - **赫尔墨斯记忆核心**：双层记忆架构（短期会话记忆 + 长期向量记忆），长期记忆支持跨会话语义检索；
-   - **混合记忆提取**：云端智谱 GLM-4-Flash 异步提取对话中的关键事实、偏好，写入 ChromaDB 向量库；
+   - **混合记忆提取**：云端智谱 GLM-4-Flash 异步提取对话中的关键事实、偏好，写入 ChromaDB 向量库；每 3 轮批量累积发送，附加上下文语义搜索，支持 ADD / UPDATE / DELETE 三操作分类，自动检测并修正矛盾记忆；
+   - **批次内自纠**：LLM 在提取时若发现对话中用户已自我纠正（如"我喜欢咖啡"→"说错了，其实是奶茶"），只提取最终版本，不产生冗余记忆；
    - **结构化 TODO 系统**：完全由云端智谱 GLM-4-Flash 驱动，本地副官模型不感知；后端 SQLite 管理待办事项，支持添加、查询、完成等操作，通过固定格式回复与用户交互；
    - **时间感知**：注入系统时间，理解相对时间表述（“今天”“明天”），记忆附带时间元数据。
 4. **语音合成（TTS）**：基于 Kokoro-82M 模型，AI 回复同时自动播报，支持手动停止/重新播报；
@@ -39,7 +40,7 @@
 | LLM上下文窗口 | 8192 tokens | 降低自16384，减少内存占用 |
 | ChromaDB缓存 | cache_capacity=1000 | 限制向量缓存大小 |
 | 短期历史限制 | 5轮 | 固定保留最近5轮对话 |
-| 记忆提取间隔 | 3轮 | 每3轮触发一次长期记忆提取 |
+| 记忆提取间隔 | 3轮 | 每3轮触发一次长期记忆提取，累积缓冲批量发送 |
 | Vosk模型共享 | 单例模式 | 多线程共享同一个模型实例 |
 | 空闲内存回收 | 定时触发 | 5分钟无活动后释放非关键资源 |
 
@@ -186,11 +187,18 @@ audio_queue, chat_request_queue, tts_request_queue
 | clear_history     | -                            | 清空短期历史                     |
 | get_history       | -                            | 获取对话历史                     |
 | **get_memories**  | query?: str                  | 查询长期记忆（可选关键词）       |
+| **delete_memory** | mem_id: str                  | 删除单条长期记忆                 |
+| **clear_all_memories** | -                       | 清空全部长期记忆                 |
+| **update_memory** | mem_id: str, content: str, importance?: int, type?: str | 手动更新单条记忆内容 |
 | set_easter_egg    | enabled: boolean             | 设置彩蛋开关                     |
 | get_status        | -                            | 获取系统状态                     |
-| **save_settings** | settings: object             | 保存设置（API Key、城市等）     |
+| **update_settings** | settings: object             | 保存设置（API Key、城市等）     |
+| **query_weather**  | location?: str, sub_ops?: list | 查询天气                       |
+| **get_system_status** | -                          | 查询系统状态（CPU/内存/磁盘/电池/网络） |
 | **test_glm_key**  | api_key: string              | 测试 GLM API Key 是否有效      |
 | **test_qweather_key** | api_key: string, api_host: string | 测试和风天气 API Key 和 Host |
+| **test_qianfan_key** | api_key: string           | 测试百度千帆 API Key 是否有效  |
+| **test_forum_search_key** | api_token: string, base_url: string | 测试集市搜索 API Key |
 
 ### 后端 → 前端（事件）
 
@@ -205,6 +213,7 @@ audio_queue, chat_request_queue, tts_request_queue
 | wake                    | -                                 | 检测到唤醒词               |
 | transcription_result    | text: str                         | 转写结果                   |
 | chat_chunk              | content: str                      | LLM 流式片段               |
+| **chat_chunk_clear**    | -                                 | 清除已累积的流式输出（本地模型求救切换到 GLM 时使用） |
 | chat_complete           | content?: str                     | 生成完成（TODO流程时返回完整内容） |
 | chat_cancelled          | -                                 | 生成已取消                 |
 | **todo_added**          | todo: {id, content, due_date}     | 待办已添加                 |
@@ -213,14 +222,21 @@ audio_queue, chat_request_queue, tts_request_queue
 | tts_started             | -                                 | TTS 开始播报               |
 | tts_stopped             | -                                 | TTS 已停止                 |
 | tts_complete            | -                                 | TTS 播报完成               |
-| **memories_list**       | memories: list                    | 长期记忆列表               |
+| **memories_list**       | memories: list, total?: int       | 长期记忆列表（含总数）     |
+| **memory_deleted**      | mem_id: str                       | 单条记忆已删除             |
+| **memories_cleared**    | count: int                        | 全部长期记忆已清空         |
+| **memory_updated**      | mem_id: str, content?, type?, importance?, timestamp?, deleted? | 记忆已更新（语义更新或矛盾删除） |
 | history_loaded          | history: list                     | 对话历史                   |
 | history_cleared         | -                                 | 历史已清空                 |
 | error                   | type: str, msg: str               | 错误信息                   |
 | egg_triggered           | id, transition_text, display_text, audio_file | 彩蛋触发       |
 | easter_egg_status       | enabled: boolean                  | 彩蛋开关状态更新           |
 | **memory_extraction_status** | status: "idle" \| "processing" | 记忆提取后台状态（可选） |
-| **api_key_test_result** | type: "glm" \| "qweather", success: boolean, message: str | API Key 测试结果 |
+| **countdown_complete**  | duration: int, text: str          | 倒计时完成通知             |
+| **system_status_result**| data: {cpu, memory, disk, battery, network} | 系统状态查询结果   |
+| **weather_result**      | data?: {location, results}, error?: str | 天气查询结果          |
+| **settings_updated**    | success: boolean                  | 设置更新结果               |
+| **api_key_test_result** | type: "glm" \| "qweather" \| "qianfan" \| "forum_search", success: boolean, message: str | API Key 测试结果 |
 
 ## 彩蛋系统
 
@@ -300,9 +316,12 @@ backend/
            ↓
          本地 LLM 流式生成回复 → 更新短期记忆
            ↓
-         后台记忆提取线程（每 N 轮或含“记住”时触发）
-           → 将最近对话发送给智谱 GLM-4-Flash
-           → 提取关键信息并写入 ChromaDB（附带时间戳）
+         后台记忆提取线程（每 3 轮或含”记住”时触发）
+           → 累积缓冲区 (pending_extraction_pairs) 持久化防丢失
+           → ChromaDB 语义搜索 top-3 相似记忆
+           → 发送给智谱 GLM-4-Flash（附带相似记忆上下文）
+           → LLM 输出 ADD/UPDATE/DELETE 分类 + 批次内自纠
+           → _execute_memory_action() 安全校验 + 执行（upsert/delete/add）
 ```
 
 ### 记忆分层
@@ -311,7 +330,7 @@ backend/
 |----------|----------|----------|------|
 | 工作记忆 | 当前用户消息 + 上下文 Prompt | 单次推理 | 临时推理所需 |
 | 短期记忆 | chat_history 内存数组 + history.json 持久化 | 当前会话 | 启动时从文件加载，对话时直接使用 |
-| 长期情景记忆 | ChromaDB 向量集合 | 持久化 | 由 GLM 提取，包含属性、事件，附带时间元数据 |
+| 长期情景记忆 | ChromaDB 向量集合 + ADD/UPDATE/DELETE 分类 | 持久化 | 由 GLM 提取，支持矛盾检测与自动修正，附带时间元数据 |
 | 语义记忆 | ChromaDB 中“指挥官属性”类条目 | 持久化 | 如“指挥官是大三学生” |
 | 程序性记忆（未来） | 副官对话风格、行为规则 | 固化在 System Prompt | 暂不动态更新 |
 
@@ -323,8 +342,35 @@ backend/
 - **不进入短期历史**：TODO 对话和彩蛋对话不会写入 chat_history，确保本地 LLM 不会感知这些事件
 
 #### 长期记忆提取
-- 普通对话完成后，每3轮对话自动触发一次记忆提取（`MEMORY_EXTRACTION_INTERVAL = 3`）
-- 提取内容经过 importance 过滤，仅保留 importance >= 7 的高价值记忆条目
+
+##### 提取触发与累积缓冲
+- 每 3 轮对话自动触发一次记忆提取（`MEMORY_EXTRACTION_INTERVAL = 3`），或用户使用强制关键词（"记住""一定要记住""这个很重要"）时立即触发
+- **累积缓冲机制**：每轮对话的 (user, assistant) 对话对都追加到 `pending_extraction_pairs` 缓冲区，触发提取时将**完整缓冲区**（而非仅当前轮）发送给 GLM-4-Flash，确保 LLM 看到提取间隔内的完整上下文
+- **持久化保护**：`pending_extraction_pairs` 实时写入磁盘文件 `pending_extraction.json`，防止应用意外关闭导致未提取对话丢失；重启后自动恢复
+- **提取后清空**：LLM 成功提取后清空缓冲区并删除持久化文件
+
+##### 记忆矛盾检测与自动修正（v2.4 新增）
+采用 **Mem0 v2 风格的 ADD/UPDATE/DELETE 三操作分类**，在单次 LLM 调用中同时完成提取和矛盾判断：
+
+```
+提取触发
+  → ① ChromaDB 语义搜索 top-3 相似已有记忆（min_score=0.3）
+  → ② 将相似记忆注入提取 Prompt，LLM 对每条候选记忆分类：
+       • add    — 新信息，与现有记忆不冲突 → 正常写入
+       • update — 修正已有记忆 → ChromaDB upsert 覆盖
+       • delete — 用户明确表示某事不再成立 → 删除旧记忆
+  → ③ _execute_memory_action() 执行 + 安全校验
+       • valid_ids 白名单：LLM 输出的 memory_id 必须在相似记忆中
+       • update/delete 绕过 importance 过滤（用户纠错永远执行）
+       • 无效 ID 时 update 降级为 add，delete 忽略
+```
+
+##### 批次内自纠
+- 如果同一批 3 轮对话中用户已自我纠正（如"我喜欢咖啡"→"说错了，其实是奶茶"），Prompt 明确指示 LLM **只提取最终版本**，不产生矛盾记忆
+
+##### 过滤与存储
+- 提取内容经过 importance 过滤，仅保留 importance >= 3 的记忆条目（add 操作受此限制，update/delete 绕过）
+- **去重**：`_add_memory` 使用 `difflib.SequenceMatcher > 0.8` 字符串相似度做第一层去重；ChromaDB 语义搜索相似记忆做第二层去重
 - TODO 对话和彩蛋对话**不会**进入长期记忆提取流程
 - 长期记忆在每次对话时检索相关条目，注入到 prompt 中供 LLM 使用
 
@@ -638,6 +684,6 @@ EXPLICIT_ROUTES = [
 - **v2.0**：混合长期记忆 + 基础时间感知。
 - **v2.1**：结构化 TODO 系统 + 记忆时间范围检索 + 前端 TODO 面板。
 - **v2.2**：统一MCP架构 + 天气查询系统 + 系统状态查询 + 时间工具 + **API Key 本地管理（设置面板）**。
-- **v2.3**：**BGE 嵌入语义匹配** + **TODO 追问确认机制** + **多意图平局处理** + **GGUF 格式 BGE 模型**（当前版本）。
-- **v2.4**：周期性提醒、自我反思记忆、工具调用扩展。
+- **v2.3**：**BGE 嵌入语义匹配** + **TODO 追问确认机制** + **多意图平局处理** + **GGUF 格式 BGE 模型**（已完成）。
+- **v2.4**：记忆矛盾检测与自动修正（ADD/UPDATE/DELETE 三操作分类 + 批次内自纠 + 未提取对话持久化）、周期性提醒、工具调用扩展。（当前版本）
 ---

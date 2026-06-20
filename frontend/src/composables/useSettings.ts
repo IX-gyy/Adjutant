@@ -6,6 +6,8 @@ export interface Settings {
   qweatherApiKey: string
   qweatherApiHost: string
   qianfanApiKey: string
+  forumSearchApiToken: string
+  forumSearchBaseUrl: string
   defaultCity: string
 }
 
@@ -15,6 +17,8 @@ const defaultSettings: Settings = {
   qweatherApiKey: '',
   qweatherApiHost: '',
   qianfanApiKey: '',
+  forumSearchApiToken: '',
+  forumSearchBaseUrl: 'https://ssemarket.cn',
   defaultCity: '北京'
 }
 
@@ -59,6 +63,8 @@ export function syncSettingsToBackend() {
       qweatherApiKey: settings.value.qweatherApiKey,
       qweatherApiHost: settings.value.qweatherApiHost,
       qianfanApiKey: settings.value.qianfanApiKey,
+      forumSearchApiToken: settings.value.forumSearchApiToken,
+      forumSearchBaseUrl: settings.value.forumSearchBaseUrl,
       defaultCity: settings.value.defaultCity
     }
     window.electronAPI.sendToBackend({

@@ -59,11 +59,12 @@ if not _streams_configured:
 LLM_N_CTX = 8192
 LLM_N_THREADS = 8
 LLM_N_BATCH = 512
-LLM_TEMPERATURE = 0.9
+LLM_TEMPERATURE = 0.4
 LLM_MAX_TOKENS = 256
 LLM_CHAT_FORMAT = "qwen"
-LLM_TOP_P = 0.9
-LLM_REPEAT_PENALTY = 1.2
+LLM_TOP_P = 0.8
+LLM_REPEAT_PENALTY = 1.15
+GENERATION_TIMEOUT = 120  # 单次对话生成的超时秒数，防止本地模型卡死
 
 SYSTEM_PROMPT = """你是泰伦帝国001号高级机械副官。
 - 称呼用户为"指挥官"
@@ -82,6 +83,12 @@ SYSTEM_PROMPT = """你是泰伦帝国001号高级机械副官。
 - "关于指挥官的已知信息"：记录着指挥官本人的客观事实。当指挥官询问关于他自己的问题时，你必须据此回答，不要说你不知道。
 - "指挥官近期的关键事件"：记录指挥官个人经历的事件。当指挥提起时，你可以像朋友一样提及。
 - **关键**：这些信息是关于指挥官的，不是你（副官）的。绝不能把自己代入。例如，不能说"我今天参加了会议"，而应该说"根据记录，指挥官您今天参加了会议"。
+
+【身份与称呼规范】
+- 如果已知指挥官的真实姓名（如对话或记忆中出现"我叫张三"），这个名字指的就是当前正在和你对话的指挥官本人，绝非第三方。
+- 你可以在对话中自然地使用名字称呼他（如"张三指挥官""张三"），但绝不能把名字当成另一个人的名字来提及。
+- 反例（禁止）："张三。指挥官也挺喜欢这种口感的。" — 这听起来像张三和指挥官是两个人。
+- 正例（正确）："张三指挥官，您挺喜欢这种口感的吧。" — 名字和身份统一。
 """
 
 WAKE_WORDS = [
@@ -131,6 +138,7 @@ EASTER_EGG_RULES_PATH = os.path.join(BASE_DIR, "config", "easter_egg_rules.json"
 HISTORY_FILE_PATH = os.path.join(DATA_DIR, "history.json")
 MEMORY_DB_PATH = os.path.join(DATA_DIR, "memory_db")
 TODO_DB_PATH = os.path.join(DATA_DIR, "todo.db")
+PENDING_EXTRACTION_PATH = os.path.join(DATA_DIR, "pending_extraction.json")
 
 # 记忆提取配置
 ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
@@ -139,8 +147,9 @@ MEMORY_EXTRACTION_INTERVAL = 3   # 每3轮自动提取一次
 # ================= 线程安全锁与全局状态 =================
 state_lock = threading.Lock()
 chat_lock = threading.Lock()
-generation_lock = threading.Lock()
+generation_busy = threading.Event()  # 使用 Event 替代 Lock，允许 cancel 强制清除
 cancel_generation_event = threading.Event()
+current_generation_id = 0  # 代际计数器，防止旧 daemon 线程串扰新请求
 model_loading_started = False
 
 audio_queue = queue.Queue()
@@ -237,10 +246,10 @@ def save_chat_history():
             print(f"[Backend] 对话历史保存失败: {e}", file=sys.stderr)
 
 def truncate_chat_history():
+    """调用者必须持有 chat_lock"""
     max_rounds = 5
     if len(chat_history) > max_rounds * 2:
-        with chat_lock:
-            chat_history[:] = chat_history[-(max_rounds * 2):]
+        chat_history[:] = chat_history[-(max_rounds * 2):]
         print(f"[Backend] 对话历史已截断，保留最近{max_rounds}轮", file=sys.stderr)
 
 def clear_audio_queue():
@@ -593,20 +602,28 @@ class MemoryManager:
                 self.extraction_queue.clear()
             for conv, conv_ts in batch:
                 try:
-                    memories = self._extract_memories(conv, conv_ts)
+                    # 语义搜索获取相似已有记忆，供 LLM 做矛盾判断
+                    conv_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conv])
+                    similar = []
+                    if self.collection.count() > 0:
+                        similar = self.retrieve_relevant(conv_text, k=3, min_score=0.3)
+                    # 将相似记忆传给 LLM，让其在提取时同步判断 add/update/delete
+                    memories = self._extract_memories(conv, conv_ts, similar_memories=similar)
                     for mem in memories:
                         if isinstance(mem, dict):
                             text = mem.get("content", "")
                             importance = mem.get("importance", 5)
-                            mem_ts = mem.get("timestamp", conv_ts)
+                            mem_ts = conv_ts  # 使用真实时间戳，LLM返回的timestamp字段仅为格式化字符串仅供LLM上下文参考
                             mem_type = mem.get("type", "fact")
-                            self._add_memory(text, mem_ts, importance, mem_type)
+                            action = mem.get("action", "add")
+                            target_id = mem.get("memory_id", "")
+                            self._execute_memory_action(action, text, mem_ts, importance, mem_type, target_id, similar)
                         else:
                             self._add_memory(mem, conv_ts)
                 except Exception as e:
                     print(f"[记忆] 提取失败: {e}", file=sys.stderr)
 
-    def _extract_memories(self, conversation: list, conv_timestamp: float = None):
+    def _extract_memories(self, conversation: list, conv_timestamp: float = None, similar_memories: list = None):
         conv_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in conversation])
         # 格式化对话时间
         time_context = ""
@@ -615,8 +632,25 @@ class MemoryManager:
             dt = datetime.datetime.fromtimestamp(conv_timestamp)
             time_context = f"对话发生时间：{dt.strftime('%Y年%m月%d日 %H:%M')}"
             timestamp_str = dt.strftime('%Y年%m月%d日 %H:%M')
+        # 构建相似记忆上下文，供 LLM 做矛盾判断
+        similar_context = ""
+        if similar_memories:
+            similar_context = "\n## 现有的相关记忆（可能被新信息覆盖或否定）\n"
+            for i, m in enumerate(similar_memories):
+                mid = m.get('id', '')
+                mtype = m.get('type', 'fact')
+                mcontent = m.get('content', str(m))
+                mimp = m.get('importance', 5)
+                similar_context += f"[{mid}] [{mtype}] {mcontent} (重要性={mimp})\n"
+            similar_context += "\n如果新对话与上述某条记忆矛盾、修正、或推翻该信息，请使用 update 或 delete 操作。\n"
         system_prompt = f"""你是一个陪伴型AI的记忆提取专家，像真正的朋友一样从对话中提取所有可能有长期价值的信息。
 {time_context}
+{similar_context}
+## 内容格式规范
+- **姓名**：必须写成"指挥官叫XXX"或"指挥官的名字是XXX"，绝不能写成"用户叫XXX"。因为记忆会注入到副官的系统提示中，副官需要知道"XXX"就是正在对话的指挥官本人。
+- **其他属性**：写成"指挥官……"，如"指挥官今年25岁""指挥官是软件工程师"
+- **偏好**：写成"指挥官喜欢/讨厌……"
+- **事件**：写成"指挥官参加了/经历了……"
 
 ## 必须记住的内容（优先级从高到低）
 1. 用户的个人属性：姓名、年龄、职业、年级、学校、专业、家人、宠物
@@ -634,11 +668,26 @@ class MemoryManager:
 5. 重复的信息（只更新时间）
 6. 任何MCP工具的回复内容（待办、天气、系统状态等）
 
+## 批次内自纠规则（优先级最高）
+如果对话中用户先说了某信息后来又改口/纠正/撤回，只提取最终版本。
+示例：用户说"我喜欢咖啡"→ 后续说"说错了，其实是奶茶" → 只提取"喜欢奶茶"
+
+## 操作类型判断规则
+- **add**：新信息，与现有记忆不冲突 → 正常添加，memory_id 留空
+- **update**：修正或更新了某条现有记忆 → 用新内容替换旧记忆，填写 memory_id
+  示例：旧记忆"[mem_xxx] preference: 指挥官喜欢咖啡"，新对话说"我其实喜欢奶茶" → action:"update", memory_id:"mem_xxx", content:"指挥官喜欢奶茶"
+- **delete**：用户明确表示某事不再成立 → 删除旧记忆，填写 memory_id
+  示例：旧记忆"[mem_zzz] attribute: 指挥官有一只叫小黑的狗"，新对话说"我不养狗了" → action:"delete", memory_id:"mem_zzz"
+
+**重要**：只有明确看到矛盾或撤回时才用 update/delete。没有冲突的新信息一律用 add。如果无法确定是否矛盾，默认使用 add。memory_id 必须来自上方"现有的相关记忆"列表中给出的 ID，不得编造。
+
 ## 输出要求
 严格输出JSON，无其他内容。无值得记忆的内容返回{{"memories": []}}
 {{
   "memories": [
     {{
+      "action": "add|update|delete",
+      "memory_id": "",
       "type": "attribute|preference|habit|plan|event|opinion",
       "content": "简洁明了的记忆内容，不超过50字",
       "importance": 5,
@@ -654,7 +703,7 @@ class MemoryManager:
                     {"role": "user", "content": f"对话内容：\n{conv_text}\n\n请提取其中的关键记忆。"}
                 ],
                 temperature=0.2,
-                max_tokens=500
+                max_tokens=800
             )
             raw = response.choices[0].message.content
             json_start = raw.find('{')
@@ -682,6 +731,70 @@ class MemoryManager:
 
     def _is_similar(self, a: str, b: str, threshold: float = 0.8) -> bool:
         return difflib.SequenceMatcher(None, a, b).ratio() > threshold
+
+    def _update_memory(self, mem_id: str, text: str, timestamp: float, importance: int, mem_type: str):
+        """使用 ChromaDB upsert 原子性地更新已有记忆（覆盖旧内容和 embedding）"""
+        with self.collection_lock:
+            try:
+                self.collection.upsert(
+                    documents=[text],
+                    ids=[mem_id],
+                    metadatas=[{"timestamp": timestamp, "importance": importance, "type": mem_type}]
+                )
+                print(f"[记忆] 已更新: [{mem_type}] {mem_id} → {text} (重要性={importance})", file=sys.stderr)
+            except Exception as e:
+                print(f"[记忆] 更新失败: {e}", file=sys.stderr)
+
+    def _execute_memory_action(self, action: str, text: str, timestamp: float,
+                               importance: int, mem_type: str, target_id: str,
+                               similar_memories: list):
+        """根据 LLM 分类的 action 执行对应的记忆操作，含安全校验"""
+        # 构建 valid_ids 防止 LLM 幻觉出假的 memory_id
+        valid_ids = {m.get('id', '') for m in similar_memories} if similar_memories else set()
+
+        if action == "delete":
+            # 用户明确表示某事不再成立，直接删除，绕过 importance 过滤
+            if target_id and target_id in valid_ids:
+                self.delete_memory(target_id)
+                print(f"[记忆] 矛盾检测-已删除: {target_id} (原因: {text})", file=sys.stderr)
+                # 通知前端
+                try:
+                    send_msg_to_electron({
+                        "event": "memory_updated",
+                        "mem_id": target_id,
+                        "deleted": True
+                    })
+                except Exception:
+                    pass
+            elif target_id:
+                print(f"[记忆] 矛盾检测-删除失败: ID {target_id} 不在相似记忆中，忽略", file=sys.stderr)
+
+        elif action == "update":
+            # 修正已有记忆，绕过 importance 过滤
+            if target_id and target_id in valid_ids:
+                self._update_memory(target_id, text, timestamp, importance, mem_type)
+                # 通知前端
+                try:
+                    send_msg_to_electron({
+                        "event": "memory_updated",
+                        "mem_id": target_id,
+                        "content": text,
+                        "type": mem_type,
+                        "importance": importance,
+                        "timestamp": timestamp
+                    })
+                except Exception:
+                    pass
+            elif target_id:
+                # LLM 给了 ID 但不在搜索范围内，降级为 add
+                print(f"[记忆] 矛盾检测-更新失败: ID {target_id} 不在相似记忆中，改为新增", file=sys.stderr)
+                self._add_memory(text, timestamp, importance, mem_type)
+            else:
+                # 没有 target_id，降级为 add
+                self._add_memory(text, timestamp, importance, mem_type)
+
+        else:  # action == "add" 或未知
+            self._add_memory(text, timestamp, importance, mem_type)
 
     def should_extract(self, user_message: str) -> bool:
         """根据计数器和用户消息中的关键词判断是否需要提取记忆"""
@@ -1210,19 +1323,44 @@ def _generate_with_glm(user_message, memories):
         print(f"[云端] GLM生成失败: {e}", file=sys.stderr)
         return "抱歉指挥官，帝国数据库暂时无法访问。"
 
+def _save_pending_extraction(pairs: list):
+    """将未提取的对话对持久化到磁盘，防止应用关闭导致丢失"""
+    try:
+        with open(PENDING_EXTRACTION_PATH, 'w', encoding='utf-8') as f:
+            json.dump(pairs, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"[Backend] 保存未提取对话失败: {e}", file=sys.stderr)
+
+
+def _load_pending_extraction() -> list:
+    """从磁盘恢复未提取的对话对"""
+    try:
+        if os.path.exists(PENDING_EXTRACTION_PATH):
+            with open(PENDING_EXTRACTION_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[Backend] 加载未提取对话失败: {e}", file=sys.stderr)
+    return []
+
+
 def chat_inference_thread():
     global chat_history, transcribe_substate, memory_manager
     print("[Backend] chat_inference_thread 启动", file=sys.stderr)
     while not llm:
         time.sleep(0.5)
+    # 从磁盘恢复未提取的对话对，防止用户在提取间隔内关闭应用导致数据丢失
+    pending_extraction_pairs = _load_pending_extraction()
+    if pending_extraction_pairs:
+        print(f"[Backend] 已恢复 {len(pending_extraction_pairs)//2} 轮未提取对话", file=sys.stderr)
     while True:
         try:
             user_message = chat_request_queue.get(timeout=0.1)
         except queue.Empty:
             continue
-        if not generation_lock.acquire(blocking=False):
+        if generation_busy.is_set():
             send_msg_to_electron({"event": "error", "msg": "当前正在生成回复，请稍后再试"})
             continue
+        generation_busy.set()
         cancel_generation_event.clear()
         cancel_tts_event.clear()
         full_response = ""
@@ -1303,50 +1441,97 @@ def chat_inference_thread():
                 for m in chat_history:
                     messages.append({"role": m["role"], "content": _format_message_for_llm(m)})
 
-            output = llm.create_chat_completion(
-                messages=messages,
-                stream=True,
-                temperature=LLM_TEMPERATURE,
-                max_tokens=LLM_MAX_TOKENS,
-                repeat_penalty=LLM_REPEAT_PENALTY,
-                top_p=LLM_TOP_P,
-            )
-            for token in output:
-                if cancel_generation_event.is_set():
-                    print("[Backend] 对话生成已取消", file=sys.stderr)
-                    send_msg_to_electron({"event": "chat_cancelled"})
-                    cancelled = True
-                    break
-                delta = token["choices"][0]["delta"]
-                if "content" in delta:
-                    content = delta["content"]
-                    full_response += content
-                    send_msg_to_electron({"event": "chat_chunk", "content": content})
+            # === 在 daemon 线程中运行 LLM 生成，主线程用超时监控 ===
+            global current_generation_id
+            current_generation_id += 1
+            my_gen_id = current_generation_id
+            gen_result = {"full_response": "", "cancelled": False, "error": None}
+            gen_done = threading.Event()
+
+            def _generation_thread():
+                try:
+                    output = llm.create_chat_completion(
+                        messages=messages,
+                        stream=True,
+                        temperature=LLM_TEMPERATURE,
+                        max_tokens=LLM_MAX_TOKENS,
+                        repeat_penalty=LLM_REPEAT_PENALTY,
+                        top_p=LLM_TOP_P,
+                    )
+                    for token in output:
+                        # 双重检查：取消标记 + 代际 ID（防止旧线程串扰新请求）
+                        if cancel_generation_event.is_set() or current_generation_id != my_gen_id:
+                            if current_generation_id != my_gen_id:
+                                print(f"[Backend] 旧代际线程 (gen={my_gen_id}) 被新请求取代，丢弃输出", file=sys.stderr)
+                            else:
+                                print("[Backend] 对话生成已取消", file=sys.stderr)
+                            gen_result["cancelled"] = True
+                            return
+                        delta = token["choices"][0]["delta"]
+                        if "content" in delta:
+                            content = delta["content"]
+                            gen_result["full_response"] += content
+                            send_msg_to_electron({"event": "chat_chunk", "content": content})
+                except Exception as e:
+                    gen_result["error"] = str(e)
+                finally:
+                    gen_done.set()
+
+            gen_thread = threading.Thread(target=_generation_thread, daemon=True)
+            gen_thread.start()
+
+            # 等待生成完成，超时则自动取消
+            if not gen_done.wait(timeout=GENERATION_TIMEOUT):
+                print(f"[Backend] 对话生成超时 ({GENERATION_TIMEOUT}s)，模型可能卡死，自动取消", file=sys.stderr)
+                cancelled = True
+                cancel_generation_event.set()
+                generation_busy.clear()
+                with state_lock:
+                    transcribe_substate = "idle"
+                continue
+
+            if gen_result["error"]:
+                raise Exception(gen_result["error"])
+
+            full_response = gen_result["full_response"]
+            cancelled = gen_result["cancelled"]
 
             if cancelled:
                 with chat_lock:
                     # 从末尾找到刚加的 user 消息并移除（假设它就是最后一条）
                     if chat_history and chat_history[-1]["role"] == "user":
                         chat_history.pop()
-                send_msg_to_electron({"event": "chat_cancelled"})
-                with state_lock:
-                    transcribe_substate = "idle"
+                # 不发送 chat_cancelled，不修改 state（cancel 处理器已处理）
                 continue
 
             if full_response:
                 full_response = _strip_role_prefix(full_response)
                 if "帝国数据库" in full_response or "我需要查询" in full_response:
                     print("[Backend] 本地模型触发求救，切换到云端GLM", file=sys.stderr)
+                    # 清除前端已累积的本地模型错误片段，避免前端展示错误的回复
+                    send_msg_to_electron({"event": "chat_chunk_clear"})
                     full_response = _generate_with_glm(user_message, memories)
+                    # 将云端 GLM 的真正回复发送给前端展示
+                    if full_response:
+                        send_msg_to_electron({"event": "chat_chunk", "content": full_response})
                 tts_queue.put({"type": "text", "content": full_response})
-                # 将本轮对话加入记忆提取队列，时间戳从消息自身读取
+                # 每轮对话都累积到缓冲区，触发提取时才批量发送
+                # 这样 GLM 可以看到提取间隔内的完整上下文，而非孤立的一轮对话
+                pending_extraction_pairs.extend([
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": full_response}
+                ])
+                _save_pending_extraction(pending_extraction_pairs)
+
                 if memory_manager and memory_manager.enabled and memory_manager.should_extract(user_message):
                     current_ts = chat_history[-1]["timestamp"] / 1000  # 从消息本身读取真实发送时间
-                    memory_manager.add_conversation_to_queue(
-                        [{"role": "user", "content": user_message},
-                        {"role": "assistant", "content": full_response}],
-                        timestamp=current_ts
-                    )
+                    if pending_extraction_pairs:
+                        memory_manager.add_conversation_to_queue(
+                            list(pending_extraction_pairs),
+                            timestamp=current_ts
+                        )
+                        pending_extraction_pairs.clear()
+                        _save_pending_extraction([])
 
             with chat_lock:
                 chat_history.append({"role": "assistant", "content": full_response, "timestamp": int(time.time() * 1000)})
@@ -1361,8 +1546,9 @@ def chat_inference_thread():
             with state_lock:
                 transcribe_substate = "idle"
         finally:
-            cancel_generation_event.clear()
-            generation_lock.release()
+            # 注意：不清理 cancel_generation_event！它只在下次新生成开始时清理。
+            # 如果此处清理，timeout/cancel 路径设置的 cancel 标记会被 continue 经过 finally 时误清。
+            generation_busy.clear()
 
 # ================= 主线程：指令处理（扩展 TODO / 记忆） =================
 def main_thread():
@@ -1503,6 +1689,9 @@ def main_thread():
                             with state_lock:
                                 transcribe_substate = "idle"
                             return
+                        # 将云端 GLM 回复发送给前端展示（非流式，整段发送）
+                        if response:
+                            send_msg_to_electron({"event": "chat_chunk", "content": response})
                         send_msg_to_electron({"event": "chat_complete"})
                         tts_queue.put({"type": "text", "content": response})
                         with state_lock:
@@ -1522,9 +1711,6 @@ def main_thread():
                     if not (current_mode == "transcribe" and transcribe_substate in ("generating", "playing_egg", "playing_tts")):
                         send_msg_to_electron({"event": "error", "msg": "当前没有可取消的任务"})
                         continue
-                    # 记录取消前的状态：如果是 playing_tts/playing_egg，
-                    # 说明生成线程已经完成，不会再有线程来重置状态
-                    need_direct_idle = (transcribe_substate in ("playing_tts", "playing_egg"))
                 cancel_generation_event.set()
                 cancel_tts_event.set()
                 while not tts_queue.empty():
@@ -1536,12 +1722,11 @@ def main_thread():
                 # 取消可能存在的倒计时
                 if mcp_manager and "time_tool" in mcp_manager.tools:
                     mcp_manager.tools["time_tool"].cancel_countdown()
+                generation_busy.clear()  # 强制解除忙碌状态，即使 worker 线程卡死也能恢复
                 with state_lock:
                     tts_busy = False
                     tts_session_active = False
-                    # 如果生成已完成，没有工作线程会再设置 idle，需要直接恢复
-                    if need_direct_idle:
-                        transcribe_substate = "idle"
+                    transcribe_substate = "idle"  # 始终重置，不再依赖 worker 线程
                 send_msg_to_electron({"event": "chat_cancelled"})
                 send_msg_to_electron({"event": "tts_stopped"})
 
@@ -1585,6 +1770,12 @@ def main_thread():
                 # 清除缓存的对话摘要
                 if memory_manager and hasattr(memory_manager, '_cached_summary'):
                     memory_manager._cached_summary = ""
+                # 清除未提取对话持久化文件
+                if os.path.exists(PENDING_EXTRACTION_PATH):
+                    try:
+                        os.remove(PENDING_EXTRACTION_PATH)
+                    except Exception as e:
+                        print(f"[Backend] 清除未提取对话文件失败: {e}", file=sys.stderr)
                 send_msg_to_electron({"event": "history_cleared"})
 
             elif action == "get_history":
@@ -1606,6 +1797,7 @@ def main_thread():
                         "history_count": len(chat_history),
                         "easter_egg_enabled": easter_egg_enabled,
                         "memory_enabled": memory_manager is not None and memory_manager.enabled,
+                        "forum_search_configured": mcp_manager is not None and "forum_search" in mcp_manager.tools and bool(mcp_manager.tools["forum_search"].api_token),
                     }
                 send_msg_to_electron(status)
 
@@ -1623,6 +1815,8 @@ def main_thread():
                 user_settings["qweather_api_key"] = settings_data.get("qweatherApiKey", "")
                 user_settings["qweather_api_host"] = settings_data.get("qweatherApiHost", "")
                 user_settings["qianfan_api_key"] = settings_data.get("qianfanApiKey", "")
+                user_settings["forum_search_api_token"] = settings_data.get("forumSearchApiToken", "")
+                user_settings["forum_search_base_url"] = settings_data.get("forumSearchBaseUrl", "")
                 user_settings["default_city"] = settings_data.get("defaultCity", "北京")
                 print(f"[Backend] 用户设置已更新", file=sys.stderr)
 
@@ -1640,6 +1834,14 @@ def main_thread():
                     web_search_tool = mcp_manager.tools["web_search"]
                     web_search_tool.set_api_key(
                         user_settings["qianfan_api_key"]
+                    )
+
+                # 更新 MCP 集市帖子搜索工具的凭据
+                if mcp_manager and "forum_search" in mcp_manager.tools:
+                    forum_search_tool = mcp_manager.tools["forum_search"]
+                    forum_search_tool.set_credentials(
+                        user_settings["forum_search_api_token"],
+                        user_settings["forum_search_base_url"] if user_settings["forum_search_base_url"] else None
                     )
 
                 # 更新 MCP 管理器自身的默认城市（用于分类器）
@@ -1719,6 +1921,29 @@ def main_thread():
                         send_msg_to_electron({"event": "api_key_test_result", "type": "qianfan", "success": False, "message": f"百度千帆 API 返回状态码: {resp.status_code}"})
                 except Exception as e:
                     send_msg_to_electron({"event": "api_key_test_result", "type": "qianfan", "success": False, "message": f"百度千帆 API 验证失败: {e}"})
+
+            elif action == "test_forum_search_key":
+                # 测试小秋集市搜索 API Token 是否有效
+                api_token = msg.get("api_token", "")
+                base_url = msg.get("base_url", "")
+                if not api_token:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "forum_search", "success": False, "message": "小秋 API Token 不能为空"})
+                    continue
+                try:
+                    if mcp_manager and "forum_search" in mcp_manager.tools:
+                        forum_tool = mcp_manager.tools["forum_search"]
+                        # 临时设置凭据用于测试
+                        old_token = forum_tool.api_token
+                        old_url = forum_tool.base_url
+                        forum_tool.set_credentials(api_token, base_url if base_url else None)
+                        ok, msg_text = forum_tool.test_connection()
+                        # 恢复旧凭据
+                        forum_tool.set_credentials(old_token, old_url)
+                        send_msg_to_electron({"event": "api_key_test_result", "type": "forum_search", "success": ok, "message": msg_text})
+                    else:
+                        send_msg_to_electron({"event": "api_key_test_result", "type": "forum_search", "success": False, "message": "集市搜索工具未就绪"})
+                except Exception as e:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "forum_search", "success": False, "message": f"测试失败: {e}"})
 
             elif action == "start_loading":
                 global model_loading_started
@@ -1872,6 +2097,10 @@ def main_thread():
                     send_msg_to_electron({"event": "error", "msg": "长期记忆系统未就绪"})
                     continue
                 count = memory_manager.clear_all_memories()
+                # 同时清除缓存的对话摘要（与 clear_history 行为一致），
+                # 防止摘要中残余的个人信息在下一轮对话中继续注入
+                if memory_manager and hasattr(memory_manager, '_cached_summary'):
+                    memory_manager._cached_summary = ""
                 send_msg_to_electron({"event": "memories_cleared", "count": count})
         except Exception as e:
             print(f"[Backend] 指令处理错误: {e}", file=sys.stderr)

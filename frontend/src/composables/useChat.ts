@@ -53,6 +53,11 @@ function handleBackendEvent(event: BackendEvent) {
       }))
       break
 
+    case 'chat_chunk_clear':
+      // 清除已累积的流式输出（本地模型求救切换到GLM时）
+      currentResponse.value = ''
+      break
+
     case 'chat_chunk':
       // 接收流式响应片段
       currentResponse.value += event.content
@@ -147,6 +152,12 @@ function handleBackendEvent(event: BackendEvent) {
           todo.status = 'completed'
         }
       }
+      break
+
+    case 'memory_updated':
+      // 记忆已在后端更新（add/update/delete），前端无需立即操作
+      // SettingsPanel 每次打开时会重新拉取最新记忆列表
+      console.log('[useChat] 记忆已更新:', event.mem_id, event.deleted ? '(已删除)' : `→ ${event.type}`)
       break
 
     case 'countdown_complete':

@@ -167,7 +167,7 @@ function handleClearHistory() {
     icon: h(ExclamationCircleOutlined),
     content: '此操作仅清空当前对话历史，不会删除 AI 对您的长期记忆。如需管理长期记忆，请前往系统设置。',
     okText: '清除对话',
-    okType: 'warning',
+    okType: 'danger',
     cancelText: '取消',
     onOk() {
       clearHistory()
@@ -290,11 +290,16 @@ function handleClearHistory() {
   box-shadow: var(--terran-glow-danger);
 }
 
-/* 主题修改：清除历史按钮hover对应颜色反馈 */
+/* 清除历史按钮：黄色醒目 */
+.control-btn.clear-history {
+  background: #faad14;
+  color: #fff;
+}
+
 .control-btn.clear-history:hover {
-  background: var(--terran-warning);
-  color: var(--terran-bg-primary);
-  box-shadow: var(--terran-glow-warning);
+  background: #ffc53d;
+  color: #fff;
+  box-shadow: 0 0 8px rgba(250, 173, 20, 0.5);
 }
 
 /* 主题修改：待办按钮hover对应颜色反馈 */

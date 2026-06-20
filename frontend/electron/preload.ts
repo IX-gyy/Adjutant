@@ -25,7 +25,10 @@ export type BackendEvent =
   | { event: 'todo_list'; todos: Array<{ id: number; content: string; created_at: string; due_date?: string; status: string }>; filter: string }
   | { event: 'todo_updated'; todo_id: number; status?: string; deleted?: boolean }
   // 长期记忆相关事件
-  | { event: 'memories_list'; memories: string[] }
+  | { event: 'memories_list'; memories: Array<{ id: string; content: string; timestamp: number; importance: number; type: string; score?: number }> | string[]; total?: number }
+  | { event: 'memory_deleted'; mem_id: string }
+  | { event: 'memories_cleared'; count: number }
+  | { event: 'memory_updated'; mem_id: string; content?: string; type?: string; importance?: number; timestamp?: number; deleted?: boolean }
   // 彩蛋相关事件
   | { event: 'egg_triggered'; id: string; transition_text: string; display_text: string; audio_file: string }
   | { event: 'easter_egg_status'; enabled: boolean }
@@ -51,7 +54,10 @@ export type FrontendAction =
   | { action: 'complete_todo'; todo_id: number }
   | { action: 'delete_todo'; todo_id: number }
   // 长期记忆相关指令
-  | { action: 'get_memories'; query?: string; after?: number; before?: number };
+  | { action: 'get_memories'; query?: string; after?: number; before?: number }
+  | { action: 'delete_memory'; mem_id: string }
+  | { action: 'clear_all_memories' }
+  | { action: 'update_memory'; mem_id: string; content: string; importance?: number; type?: string };
 
 
 
@@ -88,6 +94,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 保存临时音频文件
   saveTempAudio: (data: ArrayBuffer, fileName: string) => ipcRenderer.invoke('save-temp-audio', data, fileName),
+
+  // 在默认浏览器中打开外部链接
+  openExternal: (url: string) => ipcRenderer.send('open-external', url),
 })
 
 // TypeScript 类型声明（供前端使用）
@@ -102,6 +111,7 @@ declare global {
       minimizeWindow: () => void
       getBackendPath: () => Promise<string>
       saveTempAudio: (data: ArrayBuffer, fileName: string) => Promise<string>
+      openExternal: (url: string) => void
     }
   }
 }

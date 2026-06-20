@@ -19,6 +19,7 @@ electron.contextBridge.exposeInMainWorld("electronAPI", {
 	hideWindow: () => electron.ipcRenderer.send("hide-window"),
 	minimizeWindow: () => electron.ipcRenderer.send("minimize-window"),
 	getBackendPath: () => electron.ipcRenderer.invoke("get-backend-path"),
-	saveTempAudio: (data, fileName) => electron.ipcRenderer.invoke("save-temp-audio", data, fileName)
+	saveTempAudio: (data, fileName) => electron.ipcRenderer.invoke("save-temp-audio", data, fileName),
+	openExternal: (url) => electron.ipcRenderer.send("open-external", url)
 });
 //#endregion

@@ -19,7 +19,7 @@
         </AAvatar>
       </div>
       <div class="message-content">
-        <div class="message-bubble" :class="{ 'emperor-bubble': isEmperorMessage }">
+        <div class="message-bubble" :class="{ 'emperor-bubble': isEmperorMessage }" @click="handleLinkClick">
           <div class="message-text" v-html="formattedContent"></div>
         </div>
         <div class="message-actions">
@@ -46,7 +46,7 @@
     <!-- 用户消息：头像在右 -->
     <template v-else>
       <div class="message-content">
-        <div class="message-bubble">
+        <div class="message-bubble" @click="handleLinkClick">
           <div class="message-text" v-html="formattedContent"></div>
         </div>
         <div class="message-time">{{ formattedTime }}</div>
@@ -92,9 +92,38 @@ const displayContent = computed(() => {
   return props.message.content
 })
 
+// 辅助函数：HTML 转义（防 XSS）
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+// 辅助函数：解析 URL 和 Markdown 链接为可点击的 <a> 标签
+// 使用 data-url 存储真实 URL，不使用 href 以防 Electron 窗口内跳转
+// 点击后通过 shell.openExternal 在系统默认浏览器中打开
+function parseLinks(text: string): string {
+  // Step 1: 先转义 HTML，防止 XSS
+  let result = escapeHtml(text)
+  // Step 2: 解析 Markdown 链接 [text](url)
+  result = result.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a class="chat-link" data-url="$2" title="点击在浏览器中打开: $2">$1</a>'
+  )
+  // Step 3: 解析裸 URL（不在 <a> 标签内的 https?:// 开头的 URL）
+  result = result.replace(
+    /(?<!data-url="|">)(https?:\/\/[^\s<>\[\]()]+)/g,
+    '<a class="chat-link" data-url="$1" title="点击在浏览器中打开">$1</a>'
+  )
+  // Step 4: 换行符
+  result = result.replace(/\n/g, '<br>')
+  return result
+}
+
 const formattedContent = computed(() => {
-  // 简单处理换行符
-  return displayContent.value.replace(/\n/g, '<br>')
+  return parseLinks(displayContent.value)
 })
 
 const formattedTime = computed(() => {
@@ -114,6 +143,18 @@ const isPlaying = computed(() => {
 const isLoadingTts = computed(() => {
   return currentTtsMessageId.value === props.message.id && isTtsLoading.value
 })
+
+// 处理链接点击：直接调用系统默认浏览器打开
+function handleLinkClick(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  if (target.tagName === 'A' && target.classList.contains('chat-link')) {
+    event.preventDefault()
+    const url = target.getAttribute('data-url')
+    if (url && window.electronAPI) {
+      window.electronAPI.openExternal(url)
+    }
+  }
+}
 
 // 处理TTS播放/停止
 function handleTtsPlay() {
@@ -239,6 +280,19 @@ function handleTtsPlay() {
 .message-text {
   font-size: var(--terran-font-size-md);
   line-height: var(--terran-line-height-normal);
+}
+
+/* 聊天消息中的可点击链接 */
+:deep(.chat-link) {
+  color: #4da6ff;
+  text-decoration: underline;
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+:deep(.chat-link:hover) {
+  color: #80c4ff;
+  text-decoration: underline;
 }
 
 /* 主题修改：消息时间使用次要文字色 */
