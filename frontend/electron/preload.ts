@@ -34,6 +34,17 @@ export type BackendEvent =
   | { event: 'easter_egg_status'; enabled: boolean }
   // 状态更新事件
   | { event: 'status_update'; current_mode: 'wake' | 'transcribe'; transcribe_substate: 'idle' | 'generating' | 'playing_tts'; tts_busy: boolean; wake_model_loaded: boolean; transcribe_model_loaded: boolean; llm_model_loaded: boolean; tts_model_loaded: boolean; history_count: number; easter_egg_enabled?: boolean; memory_enabled?: boolean }
+  // 设置与 API Key 测试
+  | { event: 'settings_updated'; success: boolean; mcp_ready?: boolean }
+  | { event: 'api_key_test_result'; type: 'cloud' | 'glm' | 'qweather' | 'qianfan' | 'forum_search'; success: boolean; message: string }
+  // 其他
+  | { event: 'chat_chunk_clear' }
+  | { event: 'countdown_complete'; duration: number; text: string }
+  | { event: 'system_status_result'; data: any }
+  | { event: 'weather_result'; data?: { location: string; results: Array<{ sub_op: string; data: any; result_text: string }> }; error?: string }
+  | { event: 'loading_llm_started' }
+  | { event: 'loading_mcp_started' }
+  | { event: 'loading_mcp_done' }
 
 // 前端指令类型定义（发送给 backend.py）
 export type FrontendAction =
@@ -57,7 +68,17 @@ export type FrontendAction =
   | { action: 'get_memories'; query?: string; after?: number; before?: number }
   | { action: 'delete_memory'; mem_id: string }
   | { action: 'clear_all_memories' }
-  | { action: 'update_memory'; mem_id: string; content: string; importance?: number; type?: string };
+  | { action: 'update_memory'; mem_id: string; content: string; importance?: number; type?: string }
+  // 设置相关
+  | { action: 'update_settings'; settings: Record<string, string> }
+  | { action: 'test_glm_key'; api_key: string }
+  | { action: 'test_cloud_key'; provider: string; api_key: string; model: string; base_url: string }
+  | { action: 'test_qweather_key'; api_key: string; api_host: string }
+  | { action: 'test_qianfan_key'; api_key: string }
+  | { action: 'test_forum_search_key'; api_token: string; base_url: string }
+  // 系统
+  | { action: 'query_weather'; location?: string; sub_ops?: string[] }
+  | { action: 'get_system_status' };
 
 
 

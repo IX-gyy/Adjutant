@@ -7,8 +7,9 @@ FORUM_SEARCH_DEFAULT_BASE_URL = "https://ssemarket.cn"
 class ForumSearchTool:
     """集市帖子搜索工具 —— 调用小秋无状态问答 API 查询论坛帖子"""
 
-    def __init__(self, zhipu_client):
+    def __init__(self, zhipu_client, cloud_model="glm-4.7-flash"):
         self.zhipu_client = zhipu_client
+        self.cloud_model = cloud_model
         self.api_token = os.environ.get("SMART_QIU_API_TOKEN", "")
         self.base_url = os.environ.get("SMART_QIU_BASE_URL", FORUM_SEARCH_DEFAULT_BASE_URL).rstrip("/")
 
@@ -143,7 +144,7 @@ class ForumSearchTool:
 {raw_text}"""
 
         response = self.zhipu_client.chat.completions.create(
-            model="glm-4-flash",
+            model=self.cloud_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=1000,

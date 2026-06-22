@@ -16,40 +16,98 @@
       </div>
 
       <div class="settings-content">
-        <!-- API Keys Section -->
+        <!-- Cloud LLM Configuration -->
         <div class="settings-section">
           <h3 class="section-title">
             <svg viewBox="0 0 24 24" width="16" height="16">
               <path fill="currentColor" d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/>
             </svg>
-            API 密钥管理
+            Cloud LLM 配置
           </h3>
 
           <div class="form-group">
             <label class="form-label">
-              GLM API Key
+              提供商
+              <span class="required">*</span>
+            </label>
+            <select
+              v-model="formData.cloudProvider"
+              class="form-input"
+              @change="onProviderChange"
+            >
+              <option v-for="(preset, key) in PROVIDER_PRESETS" :key="key" :value="key">
+                {{ preset.label }}
+              </option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              API Key
               <span class="required">*</span>
             </label>
             <div class="input-row">
               <input
-                v-model="formData.glmApiKey"
+                v-model="formData.cloudApiKey"
                 type="password"
                 class="form-input"
-                placeholder="请输入 GLM API Key"
+                placeholder="请输入 API Key"
               />
               <button
                 class="btn-test"
-                :disabled="!glmKeyFilled || testingGlm"
-                @click="testGlmKey"
+                :disabled="!cloudKeyFilled || testingCloud"
+                @click="testCloudKey"
               >
-                <svg v-if="testingGlm" class="spinner" viewBox="0 0 24 24" width="14" height="14">
+                <svg v-if="testingCloud" class="spinner" viewBox="0 0 24 24" width="14" height="14">
                   <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="32" stroke-linecap="round"/>
                 </svg>
                 <span v-else>测试</span>
               </button>
             </div>
-            <span class="form-hint">用于 AI 对话功能</span>
           </div>
+
+          <div class="form-group">
+            <label class="form-label">
+              模型名称
+              <span class="required">*</span>
+            </label>
+            <input
+              v-model="formData.cloudModel"
+              type="text"
+              class="form-input"
+              placeholder="例如：glm-4.7-flash"
+            />
+          </div>
+
+          <div class="form-group" v-if="showBaseUrl">
+            <label class="form-label">
+              Base URL
+              <span class="required">*</span>
+            </label>
+            <input
+              v-model="formData.cloudBaseUrl"
+              type="text"
+              class="form-input"
+              placeholder="https://open.bigmodel.cn/api/paas/v4/"
+            />
+            <span class="form-hint">OpenAI 兼容 API 端点地址</span>
+          </div>
+          <div v-else class="form-group">
+            <span class="form-hint" style="cursor: pointer; color: var(--terran-primary);" @click="showBaseUrl = true">
+              显示 Base URL 高级设置
+            </span>
+          </div>
+          <span class="form-hint">用于 AI 对话、长期记忆提取和 MCP 工具链智能</span>
+        </div>
+
+        <!-- Other API Keys -->
+        <div class="settings-section">
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/>
+            </svg>
+            其他 API 密钥
+          </h3>
 
           <div class="form-group">
             <label class="form-label">
@@ -259,7 +317,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, h } from 'vue'
-import { settings, saveSettings as saveSettingsToStorage, type Settings } from '../composables/useSettings'
+import { settings, saveSettings as saveSettingsToStorage, PROVIDER_PRESETS, type Settings, type CloudProvider } from '../composables/useSettings'
 import { onBackendEvent, sendToBackend } from '../composables/useBackend'
 import { notification, Modal } from 'ant-design-vue'
 import { ExclamationCircleOutlined } from '@ant-design/icons-vue'
@@ -276,6 +334,11 @@ const emit = defineEmits<{
 
 // 表单数据
 const formData = ref<Settings>({
+  cloudProvider: 'glm',
+  cloudApiKey: '',
+  cloudApiKeys: {},
+  cloudModel: 'glm-4.7-flash',
+  cloudBaseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
   glmApiKey: '',
   qweatherApiKey: '',
   qweatherApiHost: '',
@@ -286,15 +349,28 @@ const formData = ref<Settings>({
 })
 
 // 测试状态
-const testingGlm = ref(false)
+const testingCloud = ref(false)
 const testingQweather = ref(false)
 const testingQianfan = ref(false)
 const testingForumSearch = ref(false)
 
+// Base URL 显示控制
+const showBaseUrl = ref(false)
+
 // 从存储加载数据到表单
 watch(() => props.visible, (newVisible) => {
   if (newVisible) {
+    const keys = settings.value.cloudApiKeys || {}
+    const provider = settings.value.cloudProvider || 'glm'
+    // 加载当前提供商的 API Key
+    const currentKey = keys[provider] || settings.value.cloudApiKey || ''
+
     formData.value = {
+      cloudProvider: provider,
+      cloudApiKey: currentKey,
+      cloudApiKeys: { ...keys },
+      cloudModel: settings.value.cloudModel || 'glm-4.7-flash',
+      cloudBaseUrl: settings.value.cloudBaseUrl || 'https://open.bigmodel.cn/api/paas/v4/',
       glmApiKey: settings.value.glmApiKey,
       qweatherApiKey: settings.value.qweatherApiKey,
       qweatherApiHost: settings.value.qweatherApiHost,
@@ -303,7 +379,8 @@ watch(() => props.visible, (newVisible) => {
       forumSearchBaseUrl: settings.value.forumSearchBaseUrl,
       defaultCity: settings.value.defaultCity
     }
-    testingGlm.value = false
+    showBaseUrl.value = provider === 'custom'
+    testingCloud.value = false
     testingQweather.value = false
     testingQianfan.value = false
     testingForumSearch.value = false
@@ -312,14 +389,20 @@ watch(() => props.visible, (newVisible) => {
 
 // 验证表单
 const isValid = computed(() => {
-  return formData.value.glmApiKey.trim() !== '' &&
+  return formData.value.cloudApiKey.trim() !== '' &&
+         formData.value.cloudModel.trim() !== '' &&
+         formData.value.cloudBaseUrl.trim() !== '' &&
          formData.value.qweatherApiKey.trim() !== '' &&
          formData.value.qweatherApiHost.trim() !== '' &&
          formData.value.qianfanApiKey.trim() !== ''
 })
 
-// GLM Key 是否填写
-const glmKeyFilled = computed(() => formData.value.glmApiKey.trim() !== '')
+// Cloud Key 是否填写
+const cloudKeyFilled = computed(() =>
+  formData.value.cloudApiKey.trim() !== '' &&
+  formData.value.cloudModel.trim() !== '' &&
+  formData.value.cloudBaseUrl.trim() !== ''
+)
 
 // 和风天气 Key + Host 是否都填写
 const qweatherFilled = computed(() =>
@@ -456,6 +539,11 @@ function closePanel() {
 
 // 保存设置
 function saveSettings() {
+  // 记住当前提供商的 API Key
+  const keys = { ...formData.value.cloudApiKeys }
+  keys[formData.value.cloudProvider] = formData.value.cloudApiKey
+  formData.value.cloudApiKeys = keys
+  formData.value.cloudApiKey = formData.value.cloudApiKey
   saveSettingsToStorage(formData.value)
   notification.success({
     message: '设置已保存',
@@ -465,15 +553,32 @@ function saveSettings() {
   closePanel()
 }
 
-// 测试 GLM API Key
-function testGlmKey() {
-  if (!glmKeyFilled.value) return
-  testingGlm.value = true
+// 提供商切换：自动填充 baseUrl 和 model，并切换到该提供商的 API Key
+function onProviderChange() {
+  const newProvider = formData.value.cloudProvider as CloudProvider
+  const preset = PROVIDER_PRESETS[newProvider]
+  if (preset && newProvider !== 'custom') {
+    formData.value.cloudBaseUrl = preset.baseUrl
+    formData.value.cloudModel = preset.model
+  }
+  // 切换到该提供商的 API Key（如果之前保存过）
+  const keys = formData.value.cloudApiKeys || {}
+  formData.value.cloudApiKey = keys[newProvider] || ''
+  showBaseUrl.value = newProvider === 'custom'
+}
+
+// 测试云端模型 API Key
+function testCloudKey() {
+  if (!cloudKeyFilled.value) return
+  testingCloud.value = true
   sendToBackend({
-    action: 'test_glm_key',
-    api_key: formData.value.glmApiKey
+    action: 'test_cloud_key',
+    provider: formData.value.cloudProvider,
+    api_key: formData.value.cloudApiKey,
+    model: formData.value.cloudModel,
+    base_url: formData.value.cloudBaseUrl
   })
-  listenTestResult('glm')
+  listenTestResult('cloud')
 }
 
 // 测试和风天气 API Key
@@ -512,11 +617,11 @@ function testForumSearchKey() {
 }
 
 // 监听测试结果
-function listenTestResult(type: 'glm' | 'qweather' | 'qianfan' | 'forum_search') {
+function listenTestResult(type: 'cloud' | 'qweather' | 'qianfan' | 'forum_search') {
   const unsubscribe = onBackendEvent((event: any) => {
     if (event.event === 'api_key_test_result' && event.type === type) {
       unsubscribe()
-      if (type === 'glm') testingGlm.value = false
+      if (type === 'cloud') testingCloud.value = false
       else if (type === 'qweather') testingQweather.value = false
       else if (type === 'qianfan') testingQianfan.value = false
       else testingForumSearch.value = false
@@ -538,8 +643,8 @@ function listenTestResult(type: 'glm' | 'qweather' | 'qianfan' | 'forum_search')
   })
   // 超时处理
   setTimeout(() => {
-    if (type === 'glm' && testingGlm.value) {
-      testingGlm.value = false
+    if (type === 'cloud' && testingCloud.value) {
+      testingCloud.value = false
       notification.error({ message: '测试超时', description: '后端无响应', duration: 3 })
     } else if (type === 'qweather' && testingQweather.value) {
       testingQweather.value = false

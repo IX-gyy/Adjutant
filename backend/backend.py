@@ -193,11 +193,31 @@ easter_egg_rules = []              # 从 JSON 加载的规则列表
 
 # ================= 用户设置存储 =================
 user_settings = {
-    "glm_api_key": "",
+    "cloud_provider": "glm",          # 'glm' | 'deepseek' | 'openai' | 'custom'
+    "cloud_api_key": "",
+    "cloud_model": "glm-4.7-flash",
+    "cloud_base_url": "https://open.bigmodel.cn/api/paas/v4/",
+    "cloud_api_keys": {},             # 每个提供商的 API Key
+    "glm_api_key": "",                # 向后兼容旧字段
     "qweather_api_key": "",
     "qweather_api_host": "",
+    "qianfan_api_key": "",
+    "forum_search_api_token": "",
+    "forum_search_base_url": "",
     "default_city": "北京"
 }
+
+# ================= 云端模型客户端工厂 =================
+def _build_cloud_client():
+    """根据当前 user_settings 创建 OpenAI 兼容客户端。
+    返回 (client, model_name) 或 (None, None)（未配置时）。"""
+    api_key = user_settings.get("cloud_api_key", "") or ZHIPU_API_KEY
+    if not api_key:
+        return None, None
+    base_url = user_settings.get("cloud_base_url", "https://open.bigmodel.cn/api/paas/v4/")
+    model = user_settings.get("cloud_model", "glm-4.7-flash")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    return client, model
 
 # ================= 工具函数 =================
 def fuzzy_match_wake_word(text):
@@ -420,11 +440,13 @@ def _is_valid_date_str(date_str):
 
 # ================= 长期记忆管理器 =================
 class MemoryManager:
-    def __init__(self, db_path: str, api_key: str):
+    def __init__(self, db_path: str, api_key: str, cloud_model: str = "glm-4.7-flash", cloud_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"):
         if not api_key:
-            print("[记忆] 未设置 ZHIPU_API_KEY，长期记忆提取功能不可用", file=sys.stderr)
+            print("[记忆] 未设置 API Key，长期记忆提取功能不可用", file=sys.stderr)
             self.enabled = False
             self.collection = None
+            self.zhipu_client = None
+            self.cloud_model = cloud_model
             return
         self.enabled = True
         os.makedirs(db_path, exist_ok=True)
@@ -443,7 +465,8 @@ class MemoryManager:
         except Exception:
             # 兼容旧版本 chromadb
             self.collection = self.client.get_or_create_collection(name="commander_memories")
-        self.zhipu_client = OpenAI(api_key=api_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
+        self.zhipu_client = OpenAI(api_key=api_key, base_url=cloud_base_url)
+        self.cloud_model = cloud_model
         self.extraction_queue = []
         self.extraction_lock = threading.Lock()
         self.collection_lock = threading.Lock()
@@ -453,7 +476,7 @@ class MemoryManager:
         self.extraction_interval = MEMORY_EXTRACTION_INTERVAL  # 每3轮自动提取一次
         self.force_keywords = ["记住", "一定要记住", "这个很重要"]
         self._cached_summary = ""  # 渐进式对话摘要缓存
-        print("[记忆] 长期记忆管理器已就绪，后台提取线程已启动", file=sys.stderr)
+        print(f"[记忆] 长期记忆管理器已就绪 (model={cloud_model})，后台提取线程已启动", file=sys.stderr)
 
     def add_conversation_to_queue(self, messages: list, timestamp: float = None):
         if not self.enabled:
@@ -577,7 +600,7 @@ class MemoryManager:
         conv_text = "\n".join([f"{m['role']}: {m['content']}" for m in older])
         try:
             response = self.zhipu_client.chat.completions.create(
-                model="glm-4-flash",
+                model=self.cloud_model,
                 messages=[
                     {"role": "system", "content": "将以下对话历史压缩为一段简洁的摘要（不超过150字），只保留关键信息和上下文。不要遗漏指挥官提到的个人信息、偏好和计划。"},
                     {"role": "user", "content": conv_text}
@@ -697,7 +720,7 @@ class MemoryManager:
 }}"""
         try:
             response = self.zhipu_client.chat.completions.create(
-                model="glm-4-flash",
+                model=self.cloud_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"对话内容：\n{conv_text}\n\n请提取其中的关键记忆。"}
@@ -875,7 +898,7 @@ class MemoryManager:
 
         try:
             response = self.zhipu_client.chat.completions.create(
-                model="glm-4-flash",
+                model=self.cloud_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"指挥官的发言：{user_message_for_llm}\n{todo_list_hint}\n\n请分析并输出 JSON。"}
@@ -987,22 +1010,31 @@ class TodoManager:
         }
 
 # ================= 模型分步加载线程 =================
-def _reinit_glm_services(glm_api_key):
-    """当用户设置 GLM API Key 后，重新初始化 MCP 和记忆管理器"""
+def _reinit_cloud_services():
+    """当用户更新云端模型配置后，重新初始化 MCP 和记忆管理器"""
     global memory_manager, mcp_manager
+    cloud_client, cloud_model = _build_cloud_client()
+
+    if not cloud_client:
+        print("[Backend] 云端服务重新初始化失败：无法创建客户端（检查 API Key 和 Base URL）", file=sys.stderr)
+        return
+
+    # 重新创建记忆管理器
     try:
-        print("[Backend] 正在用新的 GLM API Key 重新初始化记忆管理器...", file=sys.stderr)
-        memory_manager = MemoryManager(MEMORY_DB_PATH, glm_api_key)
+        api_key = user_settings.get("cloud_api_key", "")
+        base_url = user_settings.get("cloud_base_url", "https://open.bigmodel.cn/api/paas/v4/")
+        print(f"[Backend] 正在用新的云端配置重新初始化记忆管理器 (model={cloud_model})...", file=sys.stderr)
+        memory_manager = MemoryManager(MEMORY_DB_PATH, api_key, cloud_model, base_url)
     except Exception as e:
         print(f"[Backend] 记忆管理器重新初始化失败: {e}", file=sys.stderr)
 
+    # 重新创建 MCP 管理器
     try:
         zhipu = None
         if memory_manager and hasattr(memory_manager, 'zhipu_client'):
             zhipu = memory_manager.zhipu_client
-        if not zhipu and glm_api_key:
-            from openai import OpenAI
-            zhipu = OpenAI(api_key=glm_api_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
+        if not zhipu:
+            zhipu = cloud_client
 
         if zhipu:
             def get_mcp_substate():
@@ -1016,6 +1048,7 @@ def _reinit_glm_services(glm_api_key):
             existing_kf = mcp_manager.keyword_filter if mcp_manager else None
             mcp_manager = MCPManager(
                 zhipu_client=zhipu,
+                cloud_model=cloud_model,
                 todo_manager=todo_manager,
                 send_msg_fn=send_msg_to_electron,
                 tts_queue=tts_queue,
@@ -1041,10 +1074,10 @@ def _reinit_glm_services(glm_api_key):
                 web_search_tool.set_api_key(
                     user_settings.get("qianfan_api_key", "")
                 )
-            print("[Backend] MCP统一工具链管理器已重新初始化", file=sys.stderr)
+            print(f"[Backend] MCP统一工具链管理器已重新初始化 (model={cloud_model})", file=sys.stderr)
             send_msg_to_electron({"event": "settings_updated", "success": True, "mcp_ready": True})
         else:
-            print("[Backend] MCP重新初始化失败：无有效智谱客户端", file=sys.stderr)
+            print("[Backend] MCP重新初始化失败：无有效云端客户端", file=sys.stderr)
     except Exception as e:
         print(f"[Backend] MCP重新初始化失败: {e}", file=sys.stderr)
 
@@ -1093,8 +1126,10 @@ def model_load_thread():
     # 初始化记忆管理器
     print("[Backend] 正在初始化记忆管理器...", file=sys.stderr, flush=True)
     try:
-        glm_key = user_settings.get("glm_api_key", "") or ZHIPU_API_KEY
-        memory_manager = MemoryManager(MEMORY_DB_PATH, glm_key)
+        cloud_client, cloud_model = _build_cloud_client()
+        api_key = user_settings.get("cloud_api_key", "") or ZHIPU_API_KEY
+        base_url = user_settings.get("cloud_base_url", "https://open.bigmodel.cn/api/paas/v4/")
+        memory_manager = MemoryManager(MEMORY_DB_PATH, api_key, cloud_model or "glm-4.7-flash", base_url)
     except Exception as e:
         print(f"[Backend] 记忆管理器初始化失败: {e}", file=sys.stderr)
         memory_manager = None
@@ -1113,10 +1148,8 @@ def model_load_thread():
         zhipu = None
         if memory_manager and hasattr(memory_manager, 'zhipu_client'):
             zhipu = memory_manager.zhipu_client
-        glm_key = user_settings.get("glm_api_key", "") or ZHIPU_API_KEY
-        if not zhipu and glm_key:
-            from openai import OpenAI
-            zhipu = OpenAI(api_key=glm_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
+        if not zhipu:
+            zhipu, _ = _build_cloud_client()
 
         if zhipu:
             def get_mcp_substate():
@@ -1128,6 +1161,7 @@ def model_load_thread():
 
             mcp_manager = MCPManager(
                 zhipu_client=zhipu,
+                cloud_model=cloud_model or "glm-4.7-flash",
                 todo_manager=todo_manager,
                 send_msg_fn=send_msg_to_electron,
                 tts_queue=tts_queue,
@@ -1309,8 +1343,9 @@ def _generate_with_glm(user_message, memories):
                 mem_texts.append(str(m))
         system_prompt += "\n\n【关于指挥官的已知信息】\n" + "\n".join([f"- {t}" for t in mem_texts])
     try:
+        cloud_model = user_settings.get("cloud_model", "glm-4.7-flash")
         response = memory_manager.zhipu_client.chat.completions.create(
-            model="glm-4-flash",
+            model=cloud_model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
@@ -1809,16 +1844,46 @@ def main_thread():
 
             elif action == "update_settings":
                 # 更新用户设置
-                old_glm_key = user_settings.get("glm_api_key", "")
+                old_cloud_key = user_settings.get("cloud_api_key", "")
+                old_cloud_base = user_settings.get("cloud_base_url", "")
+                old_cloud_model = user_settings.get("cloud_model", "")
                 settings_data = msg.get("settings", {})
-                user_settings["glm_api_key"] = settings_data.get("glmApiKey", "")
-                user_settings["qweather_api_key"] = settings_data.get("qweatherApiKey", "")
-                user_settings["qweather_api_host"] = settings_data.get("qweatherApiHost", "")
-                user_settings["qianfan_api_key"] = settings_data.get("qianfanApiKey", "")
-                user_settings["forum_search_api_token"] = settings_data.get("forumSearchApiToken", "")
-                user_settings["forum_search_base_url"] = settings_data.get("forumSearchBaseUrl", "")
-                user_settings["default_city"] = settings_data.get("defaultCity", "北京")
-                print(f"[Backend] 用户设置已更新", file=sys.stderr)
+
+                # 云端 LLM 配置（新字段）
+                if "cloudProvider" in settings_data:
+                    user_settings["cloud_provider"] = settings_data["cloudProvider"]
+                if "cloudApiKey" in settings_data:
+                    user_settings["cloud_api_key"] = settings_data["cloudApiKey"]
+                if "cloudModel" in settings_data:
+                    user_settings["cloud_model"] = settings_data["cloudModel"]
+                if "cloudBaseUrl" in settings_data:
+                    user_settings["cloud_base_url"] = settings_data["cloudBaseUrl"]
+                # 处理每个提供商独立存储的 API Keys
+                if "cloudApiKeys" in settings_data:
+                    user_settings["cloud_api_keys"] = settings_data["cloudApiKeys"]
+                    # 从 cloudApiKeys 中提取当前提供商的 key
+                    provider = user_settings["cloud_provider"]
+                    per_provider_key = settings_data["cloudApiKeys"].get(provider, "")
+                    if per_provider_key:
+                        user_settings["cloud_api_key"] = per_provider_key
+
+                # 向后兼容：旧的 glmApiKey 映射到 cloudApiKey
+                glm_key = settings_data.get("glmApiKey", "")
+                if glm_key and not user_settings["cloud_api_key"]:
+                    user_settings["cloud_api_key"] = glm_key
+                    print("[Backend] 检测到旧版 glmApiKey，已迁移至 cloudApiKey", file=sys.stderr)
+                # 同时保持 glm_api_key 字段兼容
+                if glm_key:
+                    user_settings["glm_api_key"] = glm_key
+
+                # 其他设置
+                user_settings["qweather_api_key"] = settings_data.get("qweatherApiKey", user_settings.get("qweather_api_key", ""))
+                user_settings["qweather_api_host"] = settings_data.get("qweatherApiHost", user_settings.get("qweather_api_host", ""))
+                user_settings["qianfan_api_key"] = settings_data.get("qianfanApiKey", user_settings.get("qianfan_api_key", ""))
+                user_settings["forum_search_api_token"] = settings_data.get("forumSearchApiToken", user_settings.get("forum_search_api_token", ""))
+                user_settings["forum_search_base_url"] = settings_data.get("forumSearchBaseUrl", user_settings.get("forum_search_base_url", ""))
+                user_settings["default_city"] = settings_data.get("defaultCity", user_settings.get("default_city", "北京"))
+                print(f"[Backend] 用户设置已更新 (provider={user_settings['cloud_provider']}, model={user_settings['cloud_model']})", file=sys.stderr)
 
                 # 更新 MCP 天气工具的凭据和默认城市
                 if mcp_manager and "weather" in mcp_manager.tools:
@@ -1848,27 +1913,61 @@ def main_thread():
                 if mcp_manager:
                     mcp_manager.default_city = user_settings["default_city"]
 
-                # 如果 GLM API Key 从空变为有值，重新初始化 MCP 和记忆管理器
-                # 仅在应用已完全就绪后才触发，避免与 model_load_thread 的 ChromaDB 锁冲突
-                new_glm_key = user_settings["glm_api_key"]
-                if new_glm_key and not old_glm_key and mcp_manager is not None:
-                    threading.Thread(target=_reinit_glm_services, args=(new_glm_key,), daemon=True).start()
+                # 如果云端配置从空变为有值，或云端配置有变更，重新初始化服务
+                new_cloud_key = user_settings["cloud_api_key"]
+                cloud_config_changed = (
+                    (new_cloud_key and not old_cloud_key)
+                    or (old_cloud_key and new_cloud_key
+                        and (user_settings["cloud_base_url"] != old_cloud_base
+                             or user_settings["cloud_model"] != old_cloud_model))
+                )
+                if cloud_config_changed and mcp_manager is not None:
+                    threading.Thread(target=_reinit_cloud_services, daemon=True).start()
 
                 send_msg_to_electron({"event": "settings_updated", "success": True})
 
+            elif action == "test_cloud_key":
+                # 测试云端模型 API Key 是否有效
+                api_key = msg.get("api_key", "")
+                if not api_key:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "cloud", "success": False, "message": "API Key 不能为空"})
+                    continue
+                provider = msg.get("provider", "custom")
+                model = msg.get("model", "glm-4.7-flash")
+                base_url = msg.get("base_url", "")
+                if not base_url:
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "cloud", "success": False, "message": "Base URL 不能为空"})
+                    continue
+                provider_label = {"glm": "智谱 GLM", "deepseek": "DeepSeek", "openai": "OpenAI"}.get(provider, provider)
+                print(f"[Backend] 测试 API Key: provider={provider_label}, base_url={base_url}, model={model}", file=sys.stderr)
+                try:
+                    from openai import OpenAI
+                    client = OpenAI(api_key=api_key, base_url=base_url, timeout=15.0)
+                    resp = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": "hi"}],
+                        max_tokens=5,
+                        timeout=15.0
+                    )
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "cloud", "success": True, "message": f"{provider_label} API Key 验证成功 (model={model})"})
+                except Exception as e:
+                    print(f"[Backend] 测试 API Key 失败: {e}", file=sys.stderr)
+                    send_msg_to_electron({"event": "api_key_test_result", "type": "cloud", "success": False, "message": f"{provider_label} API Key 验证失败: {e}"})
+
             elif action == "test_glm_key":
-                # 测试 GLM API Key 是否有效
+                # 向后兼容：旧的 test_glm_key 转发到 test_cloud_key（GLM 默认参数）
                 api_key = msg.get("api_key", "")
                 if not api_key:
                     send_msg_to_electron({"event": "api_key_test_result", "type": "glm", "success": False, "message": "API Key 不能为空"})
                     continue
                 try:
                     from openai import OpenAI
-                    client = OpenAI(api_key=api_key, base_url="https://open.bigmodel.cn/api/paas/v4/")
+                    client = OpenAI(api_key=api_key, base_url="https://open.bigmodel.cn/api/paas/v4/", timeout=15.0)
                     resp = client.chat.completions.create(
-                        model="glm-4-flash",
+                        model="glm-4.7-flash",
                         messages=[{"role": "user", "content": "hi"}],
-                        max_tokens=5
+                        max_tokens=5,
+                        timeout=15.0
                     )
                     send_msg_to_electron({"event": "api_key_test_result", "type": "glm", "success": True, "message": "GLM API Key 验证成功"})
                 except Exception as e:

@@ -517,17 +517,42 @@ export interface QueryWeatherAction extends BaseFrontendAction {
 }
 
 /**
+ * 云端模型提供商类型
+ */
+export type CloudProvider = 'glm' | 'deepseek' | 'openai' | 'custom'
+
+/**
+ * 云端模型配置
+ */
+export interface CloudModelConfig {
+  provider: CloudProvider
+  apiKey: string
+  model: string
+  baseUrl: string
+}
+
+/**
  * 更新设置指令
  */
 export interface UpdateSettingsAction extends BaseFrontendAction {
   action: 'update_settings'
   settings: {
+    // Cloud LLM (new)
+    cloudProvider?: CloudProvider
+    cloudApiKey?: string
+    cloudModel?: string
+    cloudBaseUrl?: string
+    // Legacy GLM key (backward compatibility)
     glmApiKey?: string
+    // Weather
     qweatherApiKey?: string
     qweatherApiHost?: string
+    // Web search
     qianfanApiKey?: string
+    // Forum search
     forumSearchApiToken?: string
     forumSearchBaseUrl?: string
+    // Default city
     defaultCity?: string
   }
 }
@@ -557,11 +582,22 @@ export interface SettingsUpdatedEvent extends BaseBackendEvent {
 }
 
 /**
- * 测试 GLM API Key 指令
+ * 测试 GLM API Key 指令（保留向后兼容）
  */
 export interface TestGlmKeyAction extends BaseFrontendAction {
   action: 'test_glm_key'
   api_key: string
+}
+
+/**
+ * 测试云端模型 API Key 指令
+ */
+export interface TestCloudKeyAction extends BaseFrontendAction {
+  action: 'test_cloud_key'
+  provider: CloudProvider
+  api_key: string
+  model: string
+  base_url: string
 }
 
 /**
@@ -595,7 +631,7 @@ export interface TestForumSearchKeyAction extends BaseFrontendAction {
  */
 export interface ApiKeyTestResultEvent extends BaseBackendEvent {
   event: 'api_key_test_result'
-  type: 'glm' | 'qweather' | 'qianfan' | 'forum_search'
+  type: 'cloud' | 'glm' | 'qweather' | 'qianfan' | 'forum_search'
   success: boolean
   message: string
 }
@@ -627,6 +663,7 @@ export type FrontendAction =
   | QueryWeatherAction
   | UpdateSettingsAction
   | TestGlmKeyAction
+  | TestCloudKeyAction
   | TestQweatherKeyAction
   | TestQianfanKeyAction
   | TestForumSearchKeyAction

@@ -36,9 +36,10 @@ TODO_CLASSIFIER_PROMPT = """你是一个星际争霸泰伦帝国AI副官的行�
 
 
 class TodoTool:
-    def __init__(self, todo_manager, zhipu_client):
+    def __init__(self, todo_manager, zhipu_client, cloud_model="glm-4.7-flash"):
         self.todo_manager = todo_manager
         self.zhipu_client = zhipu_client
+        self.cloud_model = cloud_model
 
     def execute(self, params, current_time_str, existing_todos_hint):
         resolved_dates = params.get("resolved_dates", [])
@@ -63,7 +64,7 @@ class TodoTool:
         user_message = params.get("user_message", "")
         try:
             response = self.zhipu_client.chat.completions.create(
-                model="glm-4-flash",
+                model=self.cloud_model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"指挥官的发言：{user_message}\n{existing_todos_hint}\n\n请分析并输出 JSON。"}

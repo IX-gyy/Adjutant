@@ -6,8 +6,9 @@ QIANFAN_API_KEY = os.environ.get("QIANFAN_API_KEY", "")
 
 
 class WebSearchTool:
-    def __init__(self, zhipu_client):
+    def __init__(self, zhipu_client, cloud_model="glm-4.7-flash"):
         self.zhipu_client = zhipu_client
+        self.cloud_model = cloud_model
         self.api_key = QIANFAN_API_KEY
 
     def set_api_key(self, api_key):
@@ -91,7 +92,7 @@ class WebSearchTool:
 指挥官的问题：{user_query}"""
 
         response = self.zhipu_client.chat.completions.create(
-            model="glm-4-flash",
+            model=self.cloud_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=500,

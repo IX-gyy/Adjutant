@@ -111,8 +111,10 @@ TODO_FOLLOWUP_PROMPT = """指挥官说："{user_message}"
 class MCPManager:
     def __init__(self, zhipu_client, todo_manager, send_msg_fn, tts_queue,
                  state_lock, get_substate, set_substate, fallback_to_llm_fn=None,
-                 default_city="北京", cancel_event=None, keyword_filter=None):
+                 default_city="北京", cancel_event=None, keyword_filter=None,
+                 cloud_model="glm-4.7-flash"):
         self.zhipu_client = zhipu_client
+        self.cloud_model = cloud_model
         self.send_msg = send_msg_fn
         self.tts_queue = tts_queue
         self.state_lock = state_lock
@@ -129,12 +131,12 @@ class MCPManager:
 
         self.tools = {}
         if todo_manager:
-            self.tools["todo"] = TodoTool(todo_manager, zhipu_client)
+            self.tools["todo"] = TodoTool(todo_manager, zhipu_client, cloud_model)
         self.tools["weather"] = WeatherTool()
         self.tools["system_status"] = SystemTool()
         self.tools["time_tool"] = TimeTool(send_msg_fn, tts_queue)
-        self.tools["web_search"] = WebSearchTool(zhipu_client)
-        self.tools["forum_search"] = ForumSearchTool(zhipu_client)
+        self.tools["web_search"] = WebSearchTool(zhipu_client, cloud_model)
+        self.tools["forum_search"] = ForumSearchTool(zhipu_client, cloud_model)
 
     @property
     def enabled(self):
@@ -456,7 +458,7 @@ class MCPManager:
             )
 
             response = self.zhipu_client.chat.completions.create(
-                model="glm-4-flash",
+                model=self.cloud_model,
                 messages=[
                     {"role": "system", "content": "你是泰伦帝国001号高级机械副官。称呼用户为'指挥官'。军旅干练，带一点冷幽默。回复2-3句话，40-80字。**绝对不要**在回复中输出'副官：'、'副官:'或任何角色前缀标签。"},
                     {"role": "user", "content": prompt}
@@ -522,7 +524,7 @@ class MCPManager:
 
         try:
             response = self.zhipu_client.chat.completions.create(
-                model="glm-4-flash",
+                model=self.cloud_model,
                 messages=[
                     {"role": "system", "content": prompt},
                 ],
