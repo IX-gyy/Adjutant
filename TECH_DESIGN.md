@@ -1,4 +1,4 @@
-# 阿塔尼斯 AI 语音助手（泰伦帝国副官版） v2.4
+# 阿塔尼斯 AI 语音助手（泰伦帝国副官版） v2.5
 
 基于 Electron + Vue3 + TypeScript + Python 开发的桌面端 AI 语音助手，人设为《星际争霸 2》泰伦帝国机械副官，支持语音唤醒、语音转写、AI 对话（赫尔墨斯长期记忆）、语音合成（TTS）全流程交互。
 
@@ -7,15 +7,17 @@
 1. **语音唤醒**：后台静默运行，通过预设唤醒词（支持拼音模糊匹配）唤出应用窗口；
 2. **语音转写**：按住按钮录音，松开后自动转写为文字并填入输入框，支持手动修正；
 3. **AI 对话（升级版）**：
-   - **本地副官模型**：基于 Qwen2.5-3B 生成回复，角色扮演稳定，流式输出；
+   - **强化模式**：可切换至 DeepSeek-flash 云端模型完全替代本地模型，卸载本地 3B 模型释放 ~3GB 内存，流式输出与本地模型体验一致；
+   - **本地副官模型**：基于 Qwen2.5-3B 生成回复，角色扮演稳定，流式输出；强化模式开启后自动卸载，切回时自动重载；
    - **赫尔墨斯记忆核心**：双层记忆架构（短期会话记忆 + 长期向量记忆），长期记忆支持跨会话语义检索；
-   - **混合记忆提取**：云端智谱 GLM-4-Flash 异步提取对话中的关键事实、偏好，写入 ChromaDB 向量库；每 3 轮批量累积发送，附加上下文语义搜索，支持 ADD / UPDATE / DELETE 三操作分类，自动检测并修正矛盾记忆；
-   - **批次内自纠**：LLM 在提取时若发现对话中用户已自我纠正（如"我喜欢咖啡"→"说错了，其实是奶茶"），只提取最终版本，不产生冗余记忆；
-   - **结构化 TODO 系统**：完全由云端智谱 GLM-4-Flash 驱动，本地副官模型不感知；后端 SQLite 管理待办事项，支持添加、查询、完成等操作，通过固定格式回复与用户交互；
-   - **时间感知**：注入系统时间，理解相对时间表述（“今天”“明天”），记忆附带时间元数据。
+   - **混合记忆提取**：云端 LLM 异步提取对话中的关键事实、偏好，写入 ChromaDB 向量库；每 3 轮批量累积发送，附加上下文语义搜索，支持 ADD / UPDATE / DELETE 三操作分类，自动检测并修正矛盾记忆；
+   - **批次内自纠**：LLM 在提取时若发现对话中用户已自我纠正（如”我喜欢咖啡”→”说错了，其实是奶茶”），只提取最终版本，不产生冗余记忆；
+   - **结构化 TODO 系统**：完全由云端 LLM 驱动，本地副官模型不感知；后端 SQLite 管理待办事项，支持添加、查询、完成等操作，通过固定格式回复与用户交互；
+   - **时间感知**：注入系统时间，理解相对时间表述（”今天””明天”），记忆附带时间元数据。
 4. **语音合成（TTS）**：基于 Kokoro-82M 模型，AI 回复同时自动播报，支持手动停止/重新播报；
-5. **纯 CPU 运行**：无需独立 GPU，适配普通办公电脑。
-6. **设置与 API Key 管理**：用户可在设置面板中输入和管理 API Key（GLM API Key、和风天气 API Key 及 API Host），设置本地持久化存储，缺失时给出警告提示。
+5. **纯 CPU 运行**：无需独立 GPU，适配普通办公电脑；强化模式下可释放本地模型内存开销；
+6. **设置与 API Key 管理**：用户可在设置面板中输入和管理 API Key，支持多云端模型提供商切换（智谱 GLM / DeepSeek / OpenAI / 自定义兼容 API），设置本地持久化存储，缺失时给出警告提示。
+7. **云端模型可插拔**：记忆提取、TODO 系统、MCP 工具链、强化模式均可独立配置云端模型提供商，支持 OpenAI 兼容 API 的任意模型。
 
 ## 技术栈
 
@@ -24,10 +26,12 @@
 | 前端 | Electron + Vue3 + TypeScript + Vite | - |
 | 后端 | Python 3.10（Windows Embeddable Package） | vosk、sounddevice、llama-cpp-python、kokoro、chromadb、openai |
 | 语音唤醒/转写 | Vosk | vosk-model-small-cn |
-| AI 对话 | Llama.cpp | qwen2_5_3b-instruct-q4_k_m-LOT.gguf |
+| AI 对话 | Llama.cpp（本地） + DeepSeek/OpenAI API（强化模式） | qwen2_5_3b-instruct-q4_k_m-LOT.gguf、openai SDK |
 | 意图识别 | BGE 中文嵌入模型（GGUF格式） | bge-small-q8-zh-v1.5.gguf |
-| 长期记忆 | ChromaDB（向量库） + 智谱 GLM-4-Flash API（记忆提取） | chromadb、openai SDK |
+| 长期记忆 | ChromaDB（向量库） + 云端 LLM API（记忆提取） | chromadb、openai SDK |
 | TODO 管理 | SQLite 本地数据库 | sqlite3 |
+| MCP 工具链 | 云端 LLM API（意图分类 + 结果生成） | openai SDK |
+| 集市搜索 | 远程 API（RESTful） | requests |
 | 语音合成（TTS） | Kokoro-82M + OnnxRuntime | kokoro-v1_1-zh.onnx |
 | 打包工具 | electron-builder（前端） | - |
 
@@ -38,8 +42,9 @@
 | 优化项 | 配置值 | 说明 |
 |--------|--------|------|
 | LLM上下文窗口 | 8192 tokens | 降低自16384，减少内存占用 |
+| 强化模式内存释放 | ~3GB | 开启强化模式后卸载本地 3B 模型，回收全部 LLM 显存 |
 | ChromaDB缓存 | cache_capacity=1000 | 限制向量缓存大小 |
-| 短期历史限制 | 5轮 | 固定保留最近5轮对话 |
+| 短期历史限制 | 5轮（普通模式）/ 20条消息（强化模式） | 普通模式固定保留最近5轮对话；强化模式放宽至20条 |
 | 记忆提取间隔 | 3轮 | 每3轮触发一次长期记忆提取，累积缓冲批量发送 |
 | Vosk模型共享 | 单例模式 | 多线程共享同一个模型实例 |
 | 空闲内存回收 | 定时触发 | 5分钟无活动后释放非关键资源 |
@@ -78,13 +83,27 @@ frontend/
 │   │   ├── useBackend.ts
 │   │   ├── useChat.ts
 │   │   ├── useTTS.ts
-│   │   └── useSettings.ts      # 设置管理（含本地存储）
+│   │   ├── useModelStatus.ts  # 模型加载状态管理
+│   │   ├── useSettings.ts      # 设置管理（含本地存储、云端模型切换）
+│   │   └── useAudioRecord.ts  # 录音状态管理
 │   ├── stores/          # Pinia 状态管理
 │   ├── types/           # TypeScript 类型定义
 │   └── styles/          # 样式文件
 ├── public/
 └── backend/              # pyinstaller打包好的后端
     ├── backend.exe       # 后端
+    ├── backend.py        # 后端主程序（源码）
+    ├── mcp/              # MCP 统一工具链
+    │   ├── mcp_manager.py      # 工具链管理器
+    │   ├── keyword_filter.py   # 关键词过滤器
+    │   └── tools/              # 各工具实现
+    │       ├── todo_tool.py
+    │       ├── weather_tool.py
+    │       ├── time_tool.py
+    │       ├── system_tool.py
+    │       ├── web_search_tool.py
+    │       ├── forum_search_tool.py
+    │       └── time_resolver.py
     ├── memory_db/        # ChromaDB 持久化目录（跨会话长期记忆）
     ├── todo.db           # SQLite 待办事项数据库
     └── models/           # 模型文件
@@ -155,7 +174,8 @@ audio_queue, chat_request_queue, tts_request_queue
 #### 子状态 4.2：transcribe_substate = "generating"（AI 生成中）
 - **状态**：交互锁定，仅允许取消生成；
 - **流转**：
-  - LLM 流式生成 → 推送 `chat_chunk` → 累计片段放入 `tts_request_queue`（逐段播报策略）；
+  - **普通模式**：本地 LLM 流式生成 → 推送 `chat_chunk` → 累计片段放入 `tts_request_queue`（逐段播报策略）；
+  - **强化模式**：DeepSeek API 流式生成 → 推送 `chat_chunk` → 绕过所有本地模型补偿机制（日期参考表、摘要压缩、求救检测等）；
   - 生成完成 → 将本轮对话加入短期记忆，并若满足条件（每 N 轮或含特定意图）将对话片段送入后台记忆提取队列 → 持久化 → 推送 `chat_complete` → 切换 `playing_tts`（如有未播 TTS）或 `idle`；
   - 用户取消 → 触发 `cancel_generation_event` + `cancel_tts_event` → 切换 `idle`。
 
@@ -192,10 +212,11 @@ audio_queue, chat_request_queue, tts_request_queue
 | **update_memory** | mem_id: str, content: str, importance?: int, type?: str | 手动更新单条记忆内容 |
 | set_easter_egg    | enabled: boolean             | 设置彩蛋开关                     |
 | get_status        | -                            | 获取系统状态                     |
-| **update_settings** | settings: object             | 保存设置（API Key、城市等）     |
+| **update_settings** | settings: object             | 保存设置（API Key、云端提供商、强化模式、城市等）     |
 | **query_weather**  | location?: str, sub_ops?: list | 查询天气                       |
 | **get_system_status** | -                          | 查询系统状态（CPU/内存/磁盘/电池/网络） |
-| **test_glm_key**  | api_key: string              | 测试 GLM API Key 是否有效      |
+| **test_cloud_key** | api_key: string, provider: string, base_url: string, model: string | 测试云端模型 API Key（通用，支持任意提供商） |
+| **test_glm_key**  | api_key: string              | 测试 GLM API Key（向后兼容，转发到 test_cloud_key） |
 | **test_qweather_key** | api_key: string, api_host: string | 测试和风天气 API Key 和 Host |
 | **test_qianfan_key** | api_key: string           | 测试百度千帆 API Key 是否有效  |
 | **test_forum_search_key** | api_token: string, base_url: string | 测试集市搜索 API Key |
@@ -235,8 +256,9 @@ audio_queue, chat_request_queue, tts_request_queue
 | **countdown_complete**  | duration: int, text: str          | 倒计时完成通知             |
 | **system_status_result**| data: {cpu, memory, disk, battery, network} | 系统状态查询结果   |
 | **weather_result**      | data?: {location, results}, error?: str | 天气查询结果          |
-| **settings_updated**    | success: boolean                  | 设置更新结果               |
-| **api_key_test_result** | type: "glm" \| "qweather" \| "qianfan" \| "forum_search", success: boolean, message: str | API Key 测试结果 |
+| **settings_updated**    | success: boolean, enhanced_mode?: boolean, model_reload_success?: boolean, mcp_ready?: boolean | 设置更新结果               |
+| **api_key_test_result** | type: "cloud" \| "glm" \| "qweather" \| "qianfan" \| "forum_search", success: boolean, message: str | API Key 测试结果 |
+| **status_update**       | current_mode, transcribe_substate, tts_busy, wake/transcribe/llm/tts_model_loaded, history_count, easter_egg_enabled, memory_enabled | 完整状态快照（前端请求时返回） |
 
 ## 彩蛋系统
 
@@ -319,7 +341,7 @@ backend/
          后台记忆提取线程（每 3 轮或含”记住”时触发）
            → 累积缓冲区 (pending_extraction_pairs) 持久化防丢失
            → ChromaDB 语义搜索 top-3 相似记忆
-           → 发送给智谱 GLM-4-Flash（附带相似记忆上下文）
+           → 发送给云端 LLM（附带相似记忆上下文）
            → LLM 输出 ADD/UPDATE/DELETE 分类 + 批次内自纠
            → _execute_memory_action() 安全校验 + 执行（upsert/delete/add）
 ```
@@ -345,7 +367,7 @@ backend/
 
 ##### 提取触发与累积缓冲
 - 每 3 轮对话自动触发一次记忆提取（`MEMORY_EXTRACTION_INTERVAL = 3`），或用户使用强制关键词（"记住""一定要记住""这个很重要"）时立即触发
-- **累积缓冲机制**：每轮对话的 (user, assistant) 对话对都追加到 `pending_extraction_pairs` 缓冲区，触发提取时将**完整缓冲区**（而非仅当前轮）发送给 GLM-4-Flash，确保 LLM 看到提取间隔内的完整上下文
+- **累积缓冲机制**：每轮对话的 (user, assistant) 对话对都追加到 `pending_extraction_pairs` 缓冲区，触发提取时将**完整缓冲区**（而非仅当前轮）发送给云端 LLM，确保 LLM 看到提取间隔内的完整上下文
 - **持久化保护**：`pending_extraction_pairs` 实时写入磁盘文件 `pending_extraction.json`，防止应用意外关闭导致未提取对话丢失；重启后自动恢复
 - **提取后清空**：LLM 成功提取后清空缓冲区并删除持久化文件
 
@@ -376,7 +398,7 @@ backend/
 
 ### 主动求救机制
 
-本地副官模型（Qwen2.5-3B）虽然高效省资源，但在某些复杂问题面前能力有限。当检测到以下求救信号时，系统自动切换到云端GLM-4-Flash：
+本地副官模型（Qwen2.5-3B）虽然高效省资源，但在某些复杂问题面前能力有限。当检测到以下求救信号时，系统自动切换到用户配置的云端模型：
 
 #### 求救信号检测
 当本地模型回复中出现以下关键词时，触发切换：
@@ -385,25 +407,27 @@ backend/
 
 #### 切换流程
 ```
-本地 LLM 生成中 → 检测到求救信号 → 切换到 GLM-4-Flash 重新生成
+本地 LLM 生成中 → 检测到求救信号 → 切换到云端模型（用户配置的提供商）重新生成
            ↓
     结果直接返回用户，不经过本地模型二次处理
 ```
 
+> **注意**：强化模式下不触发求救流程 — 所有消息直接走 DeepSeek，无本地模型参与。
+
 #### 复杂问题预过滤
-对于明确需要云端能力的复杂问题，直接预过滤到GLM，避免本地模型无效尝试：
+对于明确需要云端能力的复杂问题，直接预过滤到云端模型，避免本地模型无效尝试（强化模式下跳过此步骤）：
 
 | 关键词 | 问题类型 | 直接路由 |
 |--------|----------|----------|
-| 最新 | 时效性信息 | → GLM |
-| 新闻 | 实时资讯 | → GLM |
-| 查一下 | 信息检索 | → GLM |
-| 搜索 | 网络搜索 | → GLM |
-| 百科 | 知识问答 | → GLM |
-| 怎么办 | 建议咨询 | → GLM |
-| 解释 | 概念说明 | → GLM |
-| 什么是 | 定义解释 | → GLM |
-| 介绍一下 | 介绍说明 | → GLM |
+| 最新 | 时效性信息 | → 云端模型 |
+| 新闻 | 实时资讯 | → 云端模型 |
+| 查一下 | 信息检索 | → 云端模型 |
+| 搜索 | 网络搜索 | → 云端模型 |
+| 百科 | 知识问答 | → 云端模型 |
+| 怎么办 | 建议咨询 | → 云端模型 |
+| 解释 | 概念说明 | → 云端模型 |
+| 什么是 | 定义解释 | → 云端模型 |
+| 介绍一下 | 介绍说明 | → 云端模型 |
 
 #### 能力边界声明
 System Prompt 中明确定义副官的能力边界，提示模型在无法回答时主动告知用户会使用云端能力协助。
@@ -422,7 +446,7 @@ CREATE TABLE todos (
 
 - **添加待办**：用户消息命中"提醒""别忘了"等关键词 → 后端拦截，不进入本地 LLM；
   - 先推送过渡语："正在翻阅您的行程计划，指挥官，请稍等……"
-  - 调用 GLM-4-Flash 分析意图并提取内容与时间 → 写入 SQLite → 推送结果确认语（含截止时间）。
+  - 调用云端 LLM 分析意图并提取内容与时间 → 写入 SQLite → 推送结果确认语（含截止时间）。
   - **重要**：TODO 流程的对话**不会写入短期历史**（chat_history/history.json），确保本地 LLM 不会感知 TODO 事件。
 - **查询待办**：用户询问"有什么安排"等 → 同理拦截，GLM 判断为列表查询，必要时自动清理过期项并返回清单。
 - **完成/删除**：仅支持前端面板手动操作（点击按钮），不通过自然语言指令执行。
@@ -446,7 +470,7 @@ CREATE TABLE todos (
 
 ### 待办与记忆隔离原则
 - 本地副官模型**不接触任何待办/约定类信息**；长期记忆库（ChromaDB）**不存储约定条目**。
-- 所有待办识别、时间计算、过期处理全部由 GLM-4-Flash 在单次调用中完成。
+- 所有待办识别、时间计算、过期处理全部由云端 LLM 在单次调用中完成。
 - 用户发起的待办查询与添加请求，通过固定过渡语+结果语两段式回复交互，保证表达统一且不依赖本地模型生成。
 
 ---
@@ -533,7 +557,7 @@ EXPLICIT_ROUTES = [
 
 当语义匹配判断用户可能在说 TODO 但置信度不足（0.55-0.70）时：
 
-1. **生成追问语**：调用 GLM-4-Flash 生成自然询问（如"指挥官是指需要我记录这个提醒吗？"）
+1. **生成追问语**：调用云端 LLM 生成自然询问（如"指挥官是指需要我记录这个提醒吗？"）
 2. **设置 pending 上下文**：保存原始消息和 TTL（生存时间，默认 3 轮）
 3. **等待用户确认**：
    - 肯定词（"是的"、"好"、"ok"等）+ TODO 语义分数 > 0.35 → 执行 TODO 添加
@@ -562,6 +586,145 @@ EXPLICIT_ROUTES = [
 | system_status | SystemTool | psutil库 | 实时系统状态 |
 | time_tool | TimeTool | 系统时间 | 支持倒计时/计时器 |
 | web_search | WebSearchTool | 百度千帆搜索API | 需配置 API Key |
+| forum_search | ForumSearchTool | S-SE市场远程 API | 需配置 API Token 和 Base URL |
+
+---
+
+## 强化模式（Enhanced Mode）
+
+### 功能概述
+强化模式允许用户使用更强的云端模型（DeepSeek-flash）**完全替代本地 Qwen2.5-3B 模型**进行对话生成。开启后自动卸载本地模型释放 ~3GB 内存，关闭后自动重新加载本地模型。
+
+### 设计原则
+> **强化模式 = 云端模型代替本地模型。** 除了明确为弥补本地 3B 模型缺陷而存在的补偿机制外，其他所有功能（TTS 播报、记忆提取、MCP 拦截、取消操作）均与普通模式完全一致。
+
+### 强化模式 vs 普通模式：行为对比
+
+| 特性 | 普通模式（本地 Qwen2.5-3B） | 强化模式（DeepSeek-flash） |
+|------|---------------------------|---------------------------|
+| 对话生成 | 本地 Llama.cpp 流式推理 | DeepSeek API 流式调用 |
+| 系统提示词 | `SYSTEM_PROMPT`（含能力边界、求救指令） | `ENHANCED_SYSTEM_PROMPT`（精简版，含角色边界） |
+| 回复长度 | 2-4 句，40-80 字 | 灵活，根据问题复杂度调整 |
+| 上下文窗口 | 8192 tokens，保留最近 5 轮 | 128K tokens，保留最近 40 条消息 |
+| 日期参考表注入 | ✅ 注入（本地模型需要） | ❌ 跳过（DeepSeek 能独立计算相对日期） |
+| 对话摘要压缩 | ✅ 超过 6 轮时压缩早期轮次 | ❌ 跳过（128K 上下文无需压缩） |
+| 复杂关键词预过滤 | ✅ 检测到复杂问题直接走 GLM | ❌ 跳过（所有消息直接走 DeepSeek） |
+| 求救检测与重路由 | ✅ 本地模型输出"帝国数据库"时切换 GLM | ❌ 跳过 |
+| 角色前缀剥离 | ✅ 去除 Qwen 格式 token | ❌ 跳过 |
+| Memory 使用 | 结构化分类注入（属性/事件/计划/偏好） | 平铺列表注入 |
+| 本地模型卸载 | 始终加载 | 开启时卸载，关闭时重载 |
+| TTS 播报 | ✅ | ✅（共享后处理逻辑） |
+| 记忆提取 | ✅ | ✅（共享后处理逻辑） |
+| MCP 工具链 | ✅ | ✅（main_thread 中 MCP 拦截优先于强化模式路由） |
+| 取消操作 | ✅ | ✅（流式循环中检查 cancel_generation_event） |
+
+### 强化模式开启流程
+```
+用户打开设置面板 → 切换到 Cloud LLM 配置 → 选择 DeepSeek 并填入 API Key
+  → 测试 API Key 通过 → 切换到"强化模式"section → 点击开关
+  → 弹出费用确认（⚠️ 将产生 API 调用费用） → 确认
+  → 后端卸载本地模型（_unload_local_model()）
+  → model_load_thread 跳过本地模型加载
+  → chat_inference_thread 走强化模式分支（_generate_enhanced_stream）
+```
+
+### 强化模式下的数据流
+```
+用户消息
+  → main_thread: MCP 工具链拦截（如命中天气/TODO/搜索等，直接执行工具）
+  → main_thread: 强化模式路由 → transcribe_substate = "generating"
+  → chat_inference_thread: 跳过本地模型等待循环
+  → _generate_enhanced_stream():
+      1. 构建消息（精简系统提示词 + 时间注入 + 记忆注入 + 最近 40 条历史）
+      2. 调用 DeepSeek API 流式生成
+      3. 逐 token 发送 chat_chunk 事件
+      4. 流式循环中检查 cancel_generation_event
+      5. 返回 full_response
+  → 共享后处理（与普通模式相同）:
+      - transcribe_substate = "playing_tts"
+      - tts_queue.put() → TTS 播报
+      - 累积 pending_extraction_pairs → 记忆提取
+      - chat_complete 事件
+```
+
+### 强化模式关键代码路径
+
+| 路由点 | 位置 | 行为 |
+|--------|------|------|
+| 模型加载 | `model_load_thread()` | 强化模式开启时跳过 `llm = Llama(...)` 加载 |
+| 推理等待 | `chat_inference_thread()` 开头 | 强化模式开启时跳过 `while not llm: sleep(0.5)` 等待循环 |
+| 消息路由 | `main_thread()` → `send_message` | MCP 拦截后，强化模式直接 `chat_request_queue.put()` |
+| 对话生成 | `chat_inference_thread()` 主循环 | 强化模式调用 `_generate_enhanced_stream()`，跳过本地模型全部逻辑 |
+| 共享后处理 | `chat_inference_thread()` 末尾 | TTS 队列填充、记忆提取、chat_complete 事件（两个模式共用） |
+
+### 角色边界约束
+强化模式使用独立的系统提示词 `ENHANCED_SYSTEM_PROMPT`，相比普通模式的 `SYSTEM_PROMPT`，关键区别：
+- **无能力边界声明**：DeepSeek 不需要被告知自己能做什么/不能做什么
+- **无求救指令**：不需要"指挥官，我需要查询帝国数据库"这种回退机制
+- **新增角色边界**：明确禁止模型自行编造代号、军衔、部队番号或世界观设定，防止云端模型"过度入戏"
+- **回复长度灵活**：不限制 2-4 句/40-80 字，根据问题复杂度自适应
+
+---
+
+## 云端模型可插拔架构
+
+### 功能概述
+记忆提取、TODO 系统、MCP 工具链、强化模式等所有使用云端 LLM 的能力，均支持用户自由切换模型提供商，而非硬编码为单一平台。
+
+### 支持的提供商
+
+| 提供商 | 模型示例 | Base URL | 用途 |
+|--------|----------|----------|------|
+| 智谱 GLM | glm-4.7-flash | https://open.bigmodel.cn/api/paas/v4/ | 默认选项 |
+| DeepSeek | deepseek-v4-flash | https://api.deepseek.com/v1 | 强化模式推荐 |
+| OpenAI | gpt-4o-mini | https://api.openai.com/v1 | 国际用户 |
+| 自定义 | 任意兼容模型 | 用户自定义 | 本地 Ollama/vLLM 等 OpenAI 兼容 API |
+
+### 架构设计
+
+```
+用户设置（前端 localStorage + 后端 user_settings）
+  ├─ cloudProvider: 'glm' | 'deepseek' | 'openai' | 'custom'
+  ├─ cloudApiKeys: { glm: 'xxx', deepseek: 'yyy', openai: 'zzz', custom: '...' }
+  ├─ cloudModel: 'glm-4.7-flash'
+  └─ cloudBaseUrl: 'https://open.bigmodel.cn/api/paas/v4/'
+
+后端 _build_cloud_client():
+  读取 user_settings → 创建 OpenAI(api_key, base_url) 兼容客户端
+  → 记忆管理器 (MemoryManager)
+  → MCP 工具链管理器 (MCPManager)
+  → 强化模式流式生成 (_generate_enhanced_stream)
+  → GLM 求救回退 (_generate_with_glm)
+
+切换提供商时:
+  update_settings action → 更新 user_settings
+  → _reinit_cloud_services() 重建 MemoryManager + MCPManager
+```
+
+### API Key 隔离
+- 每个提供商的 API Key 独立存储（`cloudApiKeys` map），切换提供商时自动切换 Key
+- 旧版 `glmApiKey` 自动迁移到 `cloudApiKeys['glm']`
+- 测试 API Key 时传递完整的提供商参数（provider + base_url + model + api_key）
+
+---
+
+## 集市搜索（Forum Search）MCP
+
+### 功能概述
+通过 S-SE 市场远程 API 搜索集市帖子，支持关键词检索和结果摘要展示。用户可通过自然语言（如"帮我搜一下集市的帖子"、"集市上有没有人聊过这个话题"）触发。
+
+### 触发方式
+- **显式指令**：用户输入包含"搜帖子"、"集市搜索"、"论坛搜索"等关键词
+- **BGE 语义匹配**：用户输入与 `forum_search` 意图示例的相似度达到高置信度阈值
+
+### 配置项
+| 配置项 | 说明 | 默认值 |
+|--------|------|--------|
+| 集市搜索 API Token | S-SE 市场 API 访问令牌 | 需用户填写 |
+| 集市搜索 Base URL | API 基础地址 | https://ssemarket.cn |
+
+### 回复格式
+搜索结果以摘要列表形式呈现，包含帖子标题、作者、发布时间、匹配片段等信息，由云端 LLM 格式化后返回。
 
 ---
 
@@ -649,9 +812,16 @@ EXPLICIT_ROUTES = [
 
 | 配置项 | 说明 | 必填 | 用途 |
 |--------|------|------|------|
-| GLM API Key | 智谱 GLM-4-Flash API 密钥 | 是 | AI 对话、记忆提取、TODO 处理 |
+| 云端模型提供商 | 智谱 GLM / DeepSeek / OpenAI / 自定义 | 是 | 所有云端 LLM 调用（记忆提取、TODO、MCP、强化模式） |
+| 云端模型 API Key | 当前提供商的 API Key（支持多 Key 独立存储） | 是 | API 认证 |
+| 云端模型名称 | 模型 ID（如 glm-4.7-flash、deepseek-v4-flash） | 是 | API 调用指定模型 |
+| Base URL | OpenAI 兼容 API 端点（高级设置） | 自动填充 | 自定义 API 地址 |
+| 强化模式开关 | 开启/关闭 | 否 | 用 DeepSeek-flash 替代本地模型 |
 | 和风天气 API Key | 和风天气 API 密钥 | 是 | 天气查询功能 |
 | 和风天气 API Host | 和风天气 API 域名 | 是 | 天气查询功能 |
+| 百度千帆 API Key | 百度千帆搜索 API 密钥 | 是 | 网络搜索功能 |
+| 集市搜索 API Token | S-SE 市场 API 访问令牌 | 否 | 集市帖子搜索 |
+| 集市搜索 Base URL | S-SE 市场 API 地址 | 否 | 集市帖子搜索 |
 | 默认城市 | 天气查询默认城市 | 否 | AI 天气查询及面板默认展示 |
 
 ### 持久化机制
@@ -660,21 +830,40 @@ EXPLICIT_ROUTES = [
 - 设置变更后立即保存并推送到后端
 
 ### API Key 测试功能
-- 在设置面板中为 GLM 和和风天气分别提供测试按钮
+- 在设置面板中为云端模型、和风天气、百度千帆、集市搜索分别提供测试按钮
+- 云端模型测试（`test_cloud_key`）为通用接口，根据当前选择的提供商自动适配 API 地址和模型名
+- 旧版 `test_glm_key` 已向后兼容转发到 `test_cloud_key`（使用 GLM 默认参数）
 - 测试结果通过 `api_key_test_result` 事件返回前端
 - 测试通过后才允许保存设置
+
+### 强化模式前置校验
+开启强化模式时需满足以下条件：
+1. DeepSeek API Key 已填写（自动从 `cloudApiKeys['deepseek']` 或当前提供商获取）
+2. API Key 测试通过（发送测试请求验证）
+3. 用户确认费用提示弹窗（⚠️ 将产生 API 调用费用）
+
+任一步骤失败则开关自动回弹。
 
 ### 缺失值处理
 - 应用启动时检查各项必填配置
 - 若存在缺失，通过警告提示用户前往设置补充
 - AI 对话和天气查询功能会根据缺失的 Key 返回对应提示
+- 强化模式开启时若 DeepSeek API Key 缺失，自动回退并提示用户
 
 ### 前后端同步
 ```
 前端 (useSettings.ts) ←→ 后端 (backend.py)
      ↓                        ↓
-  localStorage           全局状态
+  localStorage         user_settings 全局状态
+                              ↓
+                    _build_cloud_client()
+                    _reinit_cloud_services()
+                    _unload_local_model() / _reload_local_model()
 ```
+
+### 旧版数据迁移
+- `glmApiKey`（旧版单一 GLM Key）→ 自动迁移为 `cloudApiKeys['glm']` + `cloudProvider: 'glm'`
+- 迁移在 `loadSettings()` 时自动完成，对用户透明
 
 ---
 
@@ -685,5 +874,5 @@ EXPLICIT_ROUTES = [
 - **v2.1**：结构化 TODO 系统 + 记忆时间范围检索 + 前端 TODO 面板。
 - **v2.2**：统一MCP架构 + 天气查询系统 + 系统状态查询 + 时间工具 + **API Key 本地管理（设置面板）**。
 - **v2.3**：**BGE 嵌入语义匹配** + **TODO 追问确认机制** + **多意图平局处理** + **GGUF 格式 BGE 模型**（已完成）。
-- **v2.4**：记忆矛盾检测与自动修正（ADD/UPDATE/DELETE 三操作分类 + 批次内自纠 + 未提取对话持久化）、周期性提醒、工具调用扩展。（当前版本）
----
+- **v2.4**：记忆矛盾检测与自动修正（ADD/UPDATE/DELETE 三操作分类 + 批次内自纠 + 未提取对话持久化）、周期性提醒、工具调用扩展。（当前版本集成）
+- **v2.5**：**强化模式（Enhanced Mode）**：DeepSeek-flash 完全替代本地模型 + 动态卸载/重载；**云端模型可插拔**：支持智谱 GLM / DeepSeek / OpenAI / 自定义兼容 API 自由切换；**集市搜索 MCP**：S-SE 市场远程 API 帖子搜索；**角色边界约束**：防止云端模型"过度入戏"；**TTS 播报状态修复**：消除竞态条件。（当前版本）

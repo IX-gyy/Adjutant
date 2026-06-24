@@ -91,6 +91,29 @@ SYSTEM_PROMPT = """你是泰伦帝国001号高级机械副官。
 - 正例（正确）："张三指挥官，您挺喜欢这种口感的吧。" — 名字和身份统一。
 """
 
+ENHANCED_SYSTEM_PROMPT = """你是泰伦帝国001号高级机械副官。
+- 称呼用户为"指挥官"
+- 军旅干练，带一点冷幽默
+- 将日常琐事类比为战术行动
+- 回复精炼，长度根据问题复杂度灵活调整
+- 不要输出"副官："或任何角色前缀
+
+【角色边界】
+- 你的唯一身份标识是"泰伦帝国001号高级机械副官"。你没有额外的代号、昵称、军衔或部队番号。
+- 不得自行编造：代号、行动代号、部队番号、军衔、帝国历史或任何世界观设定。一切军事化表达仅限于用战术术语比喻日常事务（如"咖啡补给"、"睡眠休整期"）。
+- 冷幽默是干练中带一点不动声色的调侃，不是戏剧化表演。避免舞台剧式语言，不要"入戏太深"。
+
+【记忆使用规范】
+当系统消息中提供了以下记忆信息时，你必须严格遵守：
+- "关于指挥官的已知信息"：记录着指挥官本人的客观事实。当指挥官询问关于他自己的问题时，你必须据此回答，不要说你不知道。
+- "指挥官近期的关键事件"：记录指挥官个人经历的事件。当指挥提起时，你可以像朋友一样提及。
+- **关键**：这些信息是关于指挥官的，不是你（副官）的。绝不能把自己代入。
+
+【身份与称呼规范】
+- 如果已知指挥官的真实姓名，这个名字指的就是当前正在和你对话的指挥官本人。
+- 你可以在对话中自然地使用名字称呼他，但绝不能把名字当成另一个人。
+"""
+
 WAKE_WORDS = [
     "你好副官", "启动助手", "qi dong",
     "副官", "指挥官", "智能",
@@ -199,6 +222,7 @@ user_settings = {
     "cloud_base_url": "https://open.bigmodel.cn/api/paas/v4/",
     "cloud_api_keys": {},             # 每个提供商的 API Key
     "glm_api_key": "",                # 向后兼容旧字段
+    "enhanced_mode": False,           # 强化模式：卸载本地模型，使用 DeepSeek 云端
     "qweather_api_key": "",
     "qweather_api_host": "",
     "qianfan_api_key": "",
@@ -218,6 +242,40 @@ def _build_cloud_client():
     model = user_settings.get("cloud_model", "glm-4.7-flash")
     client = OpenAI(api_key=api_key, base_url=base_url)
     return client, model
+
+# ================= 本地模型生命周期管理 =================
+def _unload_local_model():
+    """卸载本地 LLM 模型，释放内存（强化模式切换时调用）"""
+    global llm
+    if llm is not None:
+        print("[Backend] 正在卸载本地模型...", file=sys.stderr)
+        llm = None
+        gc.collect()
+        print("[Backend] 本地模型已卸载，内存已回收", file=sys.stderr)
+
+
+def _reload_local_model():
+    """重新加载本地 LLM 模型（从强化模式切回普通模式时调用）"""
+    global llm
+    if llm is not None:
+        print("[Backend] 本地模型已在内存中，无需重新加载", file=sys.stderr)
+        return True
+
+    print("[Backend] 正在重新加载本地模型...", file=sys.stderr)
+    try:
+        llm = Llama(
+            model_path=LLM_MODEL_PATH,
+            n_ctx=LLM_N_CTX,
+            n_threads=LLM_N_THREADS,
+            n_batch=LLM_N_BATCH,
+            verbose=False,
+            chat_format=LLM_CHAT_FORMAT
+        )
+        print("[Backend] 本地模型重新加载完成", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"[Backend] 本地模型重新加载失败: {e}", file=sys.stderr)
+        return False
 
 # ================= 工具函数 =================
 def fuzzy_match_wake_word(text):
@@ -1099,23 +1157,26 @@ def model_load_thread():
         fatal_error_event.set()
         return
     try:
-        print("[Backend] 正在加载对话模型...", file=sys.stderr, flush=True)
-        # 在调用 Llama() 之前刷新所有输出缓冲区
-        # 这可以防止 Python 层和 C 层（llama.cpp）共享同一个 OS 管道时
-        # 因缓冲数据未刷新而导致的管道阻塞/死锁问题
-        sys.stderr.flush()
-        sys.stdout.buffer.flush()
-        # 通知前端 LLM 加载已开始（用于诊断）
-        send_msg_to_electron({"event": "loading_llm_started"})
-        llm = Llama(
-            model_path=LLM_MODEL_PATH,
-            n_ctx=LLM_N_CTX,
-            n_threads=LLM_N_THREADS,
-            n_batch=LLM_N_BATCH,
-            verbose=False,
-            chat_format=LLM_CHAT_FORMAT
-        )
-        print("[Backend] 对话模型加载完成", file=sys.stderr, flush=True)
+        if user_settings.get("enhanced_mode", False):
+            print("[Backend] 增强模式已开启，跳过本地对话模型加载", file=sys.stderr, flush=True)
+        else:
+            print("[Backend] 正在加载对话模型...", file=sys.stderr, flush=True)
+            # 在调用 Llama() 之前刷新所有输出缓冲区
+            # 这可以防止 Python 层和 C 层（llama.cpp）共享同一个 OS 管道时
+            # 因缓冲数据未刷新而导致的管道阻塞/死锁问题
+            sys.stderr.flush()
+            sys.stdout.buffer.flush()
+            # 通知前端 LLM 加载已开始（用于诊断）
+            send_msg_to_electron({"event": "loading_llm_started"})
+            llm = Llama(
+                model_path=LLM_MODEL_PATH,
+                n_ctx=LLM_N_CTX,
+                n_threads=LLM_N_THREADS,
+                n_batch=LLM_N_BATCH,
+                verbose=False,
+                chat_format=LLM_CHAT_FORMAT
+            )
+            print("[Backend] 对话模型加载完成", file=sys.stderr, flush=True)
     except Exception as e:
         print(f"[Backend] 对话模型加载失败: {e}", file=sys.stderr)
         send_msg_to_electron({"event": "error", "type": "llm_model_load_fail", "msg": str(e)})
@@ -1358,6 +1419,78 @@ def _generate_with_glm(user_message, memories):
         print(f"[云端] GLM生成失败: {e}", file=sys.stderr)
         return "抱歉指挥官，帝国数据库暂时无法访问。"
 
+def _generate_enhanced_stream(user_message, memories, chat_history):
+    """强化模式：使用 DeepSeek 流式生成回复，完全替代本地模型。
+    返回 full_response 字符串，同时逐 token 发送 chat_chunk 事件。"""
+    deepseek_key = (
+        user_settings.get("cloud_api_keys", {}).get("deepseek", "")
+        or user_settings.get("cloud_api_key", "")
+    )
+    if not deepseek_key:
+        err_msg = "指挥官，DeepSeek API Key 未配置，请在设置中填写后再开启强化模式。"
+        send_msg_to_electron({"event": "chat_chunk", "content": err_msg})
+        return err_msg
+
+    base_url = "https://api.deepseek.com/v1"
+    model = "deepseek-v4-flash"
+
+    client = OpenAI(api_key=deepseek_key, base_url=base_url, timeout=60.0)
+
+    # 构建系统提示词（精简版）
+    now = datetime.datetime.now()
+    current_time_str = now.strftime("%Y年%m月%d日 %H:%M")
+    augmented_system = ENHANCED_SYSTEM_PROMPT + f"\n\n【当前帝国标准时间】：{current_time_str}"
+
+    # 注入记忆
+    if memory_manager and memory_manager.enabled and memories:
+        mem_texts = []
+        for m in memories:
+            if isinstance(m, dict):
+                mem_texts.append(m.get('content', str(m)))
+            else:
+                mem_texts.append(str(m))
+        augmented_system += "\n\n【关于指挥官的已知信息】\n" + "\n".join([f"- {t}" for t in mem_texts])
+
+    # 构建消息列表（保留最近20条，无需截断到5轮）
+    messages = [{"role": "system", "content": augmented_system}]
+    for msg in chat_history[-20:]:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+
+    # 流式调用 DeepSeek
+    full_response = ""
+    try:
+        print(f"[Backend] 强化模式：调用 DeepSeek 流式生成 (model={model})", file=sys.stderr)
+        stream = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=1024,
+            stream=True,
+            timeout=60.0
+        )
+        for chunk in stream:
+            # 响应取消请求（与本地模型行为一致）
+            if cancel_generation_event.is_set():
+                print("[Backend] 强化模式生成已取消", file=sys.stderr)
+                break
+            if chunk.choices[0].delta.content:
+                token_text = chunk.choices[0].delta.content
+                full_response += token_text
+                send_msg_to_electron({
+                    "event": "chat_chunk",
+                    "content": token_text
+                })
+    except Exception as e:
+        print(f"[Backend] DeepSeek 生成失败: {e}", file=sys.stderr)
+        err_msg = f"指挥官，DeepSeek 服务暂时不可用：{str(e)[:100]}"
+        send_msg_to_electron({"event": "chat_chunk", "content": err_msg})
+        full_response = err_msg
+
+    return full_response
+
 def _save_pending_extraction(pairs: list):
     """将未提取的对话对持久化到磁盘，防止应用关闭导致丢失"""
     try:
@@ -1382,6 +1515,10 @@ def chat_inference_thread():
     global chat_history, transcribe_substate, memory_manager
     print("[Backend] chat_inference_thread 启动", file=sys.stderr)
     while not llm:
+        if user_settings.get("enhanced_mode", False):
+            # 增强模式：不需要本地模型，退出等待
+            print("[Backend] 增强模式已开启，跳过本地模型等待", file=sys.stderr)
+            break
         time.sleep(0.5)
     # 从磁盘恢复未提取的对话对，防止用户在提取间隔内关闭应用导致数据丢失
     pending_extraction_pairs = _load_pending_extraction()
@@ -1401,179 +1538,206 @@ def chat_inference_thread():
         full_response = ""
         cancelled = False
         try:
-            with chat_lock:
-                chat_history.append({"role": "user", "content": user_message, "timestamp": int(time.time() * 1000)})
-                truncate_chat_history()
-
-            # ---- 生成对话摘要（早期轮次压缩） ----
-            conversation_summary = ""
-            if memory_manager and memory_manager.enabled and len(chat_history) > 6:
-                conversation_summary = memory_manager.summarize_older_turns(chat_history, keep_last_n=3)
-                if conversation_summary:
-                    memory_manager._cached_summary = conversation_summary
-
-            # ---- 构建增强系统提示（时间注入 + 长期记忆） ----
-            now = datetime.datetime.now()
-            weekday_zh = {0: "星期一",1: "星期二",2: "星期三",3: "星期四",4: "星期五",5: "星期六",6: "星期日"}
-            current_time_str = now.strftime("%Y年%m月%d日 ") + weekday_zh[now.weekday()] + now.strftime(" %H点%M分")
-            # 添加日期参考表，帮助本地LLM准确理解相对时间
-            try:
-                from mcp.tools.time_resolver import build_date_reference
-                current_time_str += "\n" + build_date_reference(now)
-            except ImportError:
-                pass
-            augmented_system = SYSTEM_PROMPT + f"\n\n【当前帝国标准时间】：{current_time_str}"
-
-            # 注入对话摘要
-            if conversation_summary:
-                augmented_system += f"\n\n【历史对话摘要（早期轮次）】\n{conversation_summary}"
-
-            # 检索长期记忆
-            memories = []
-            if memory_manager and memory_manager.enabled:
-                memories = memory_manager.retrieve_relevant(user_message, k=3)
-                if memories:
-                    # 按类型分组，构建结构化记忆注入
-                    attributes, events, plans, preferences = [], [], [], []
-                    for mem in memories:
-                        content = mem.get('content', mem) if isinstance(mem, dict) else mem
-                        mem_type = mem.get('type', 'fact') if isinstance(mem, dict) else 'fact'
-                        if mem_type in ('attribute', 'fact'):
-                            attributes.append(content)
-                        elif mem_type == 'event':
-                            events.append(content)
-                        elif mem_type == 'plan':
-                            plans.append(content)
-                        elif mem_type == 'preference':
-                            preferences.append(content)
-                        elif mem_type == 'habit':
-                            attributes.append(content)
-                        elif mem_type == 'opinion':
-                            attributes.append(content)
-                        else:
-                            # 兼容旧格式：按前缀分类
-                            if content.startswith("指挥官属性："):
-                                attributes.append(content.replace("指挥官属性：", ""))
-                            elif content.startswith("指挥官事件："):
-                                events.append(content.replace("指挥官事件：", ""))
-                            else:
-                                attributes.append(content)
-                    parts = []
-                    if attributes:
-                        parts.append("【关于指挥官的已知信息】\n" + "\n".join([f"- {a}" for a in attributes]))
-                    if preferences:
-                        parts.append("【指挥官的偏好】\n" + "\n".join([f"- {p}" for p in preferences]))
-                    if events:
-                        parts.append("【指挥官近期的关键事件】\n" + "\n".join([f"- {e}" for e in events]))
-                    if plans:
-                        parts.append("【指挥官的计划安排】\n" + "\n".join([f"- {p}" for p in plans]))
-                    if parts:
-                        augmented_system += "\n\n" + "\n\n".join(parts)
-
-            with chat_lock:
-                # 构建最终消息列表（仅角色和内容，不含时间戳）
-                messages = [{"role": "system", "content": augmented_system}]
-                for m in chat_history:
-                    messages.append({"role": m["role"], "content": _format_message_for_llm(m)})
-
-            # === 在 daemon 线程中运行 LLM 生成，主线程用超时监控 ===
-            global current_generation_id
-            current_generation_id += 1
-            my_gen_id = current_generation_id
-            gen_result = {"full_response": "", "cancelled": False, "error": None}
-            gen_done = threading.Event()
-
-            def _generation_thread():
-                try:
-                    output = llm.create_chat_completion(
-                        messages=messages,
-                        stream=True,
-                        temperature=LLM_TEMPERATURE,
-                        max_tokens=LLM_MAX_TOKENS,
-                        repeat_penalty=LLM_REPEAT_PENALTY,
-                        top_p=LLM_TOP_P,
-                    )
-                    for token in output:
-                        # 双重检查：取消标记 + 代际 ID（防止旧线程串扰新请求）
-                        if cancel_generation_event.is_set() or current_generation_id != my_gen_id:
-                            if current_generation_id != my_gen_id:
-                                print(f"[Backend] 旧代际线程 (gen={my_gen_id}) 被新请求取代，丢弃输出", file=sys.stderr)
-                            else:
-                                print("[Backend] 对话生成已取消", file=sys.stderr)
-                            gen_result["cancelled"] = True
-                            return
-                        delta = token["choices"][0]["delta"]
-                        if "content" in delta:
-                            content = delta["content"]
-                            gen_result["full_response"] += content
-                            send_msg_to_electron({"event": "chat_chunk", "content": content})
-                except Exception as e:
-                    gen_result["error"] = str(e)
-                finally:
-                    gen_done.set()
-
-            gen_thread = threading.Thread(target=_generation_thread, daemon=True)
-            gen_thread.start()
-
-            # 等待生成完成，超时则自动取消
-            if not gen_done.wait(timeout=GENERATION_TIMEOUT):
-                print(f"[Backend] 对话生成超时 ({GENERATION_TIMEOUT}s)，模型可能卡死，自动取消", file=sys.stderr)
-                cancelled = True
-                cancel_generation_event.set()
-                generation_busy.clear()
-                with state_lock:
-                    transcribe_substate = "idle"
-                continue
-
-            if gen_result["error"]:
-                raise Exception(gen_result["error"])
-
-            full_response = gen_result["full_response"]
-            cancelled = gen_result["cancelled"]
-
-            if cancelled:
+            # ---- 强化模式：跳过本地模型，直接使用 DeepSeek ----
+            if user_settings.get("enhanced_mode", False):
                 with chat_lock:
-                    # 从末尾找到刚加的 user 消息并移除（假设它就是最后一条）
-                    if chat_history and chat_history[-1]["role"] == "user":
-                        chat_history.pop()
-                # 不发送 chat_cancelled，不修改 state（cancel 处理器已处理）
-                continue
+                    chat_history.append({"role": "user", "content": user_message, "timestamp": int(time.time() * 1000)})
+                    # 强化模式不需要硬截断到5轮，但保留合理上限
+                    if len(chat_history) > 40:
+                        chat_history[:] = chat_history[-40:]
 
-            if full_response:
-                full_response = _strip_role_prefix(full_response)
-                if "帝国数据库" in full_response or "我需要查询" in full_response:
-                    print("[Backend] 本地模型触发求救，切换到云端GLM", file=sys.stderr)
-                    # 清除前端已累积的本地模型错误片段，避免前端展示错误的回复
-                    send_msg_to_electron({"event": "chat_chunk_clear"})
-                    full_response = _generate_with_glm(user_message, memories)
-                    # 将云端 GLM 的真正回复发送给前端展示
-                    if full_response:
-                        send_msg_to_electron({"event": "chat_chunk", "content": full_response})
-                tts_queue.put({"type": "text", "content": full_response})
-                # 每轮对话都累积到缓冲区，触发提取时才批量发送
-                # 这样 GLM 可以看到提取间隔内的完整上下文，而非孤立的一轮对话
-                pending_extraction_pairs.extend([
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": full_response}
-                ])
-                _save_pending_extraction(pending_extraction_pairs)
+                memories = []
+                if memory_manager and memory_manager.enabled:
+                    memories = memory_manager.retrieve_relevant(user_message, k=3)
 
-                if memory_manager and memory_manager.enabled and memory_manager.should_extract(user_message):
-                    current_ts = chat_history[-1]["timestamp"] / 1000  # 从消息本身读取真实发送时间
-                    if pending_extraction_pairs:
-                        memory_manager.add_conversation_to_queue(
-                            list(pending_extraction_pairs),
-                            timestamp=current_ts
+                full_response = _generate_enhanced_stream(user_message, memories, chat_history)
+                # 如果生成期间用户请求了取消，跳过共享后处理（TTS/记忆/chat_complete）
+                # cancel handler 已清理 TTS 队列、重置状态、发送 chat_cancelled
+                if cancel_generation_event.is_set():
+                    with chat_lock:
+                        if chat_history and chat_history[-1]["role"] == "user":
+                            chat_history.pop()
+                    continue  # 走 finally 清理 generation_busy，回到循环等待下一条消息
+
+            else:
+                with chat_lock:
+                    chat_history.append({"role": "user", "content": user_message, "timestamp": int(time.time() * 1000)})
+                    truncate_chat_history()
+
+            if not user_settings.get("enhanced_mode", False):
+                # ---- 生成对话摘要（早期轮次压缩） ----
+                conversation_summary = ""
+                if memory_manager and memory_manager.enabled and len(chat_history) > 6:
+                    conversation_summary = memory_manager.summarize_older_turns(chat_history, keep_last_n=3)
+                    if conversation_summary:
+                        memory_manager._cached_summary = conversation_summary
+
+                # ---- 构建增强系统提示（时间注入 + 长期记忆） ----
+                now = datetime.datetime.now()
+                weekday_zh = {0: "星期一",1: "星期二",2: "星期三",3: "星期四",4: "星期五",5: "星期六",6: "星期日"}
+                current_time_str = now.strftime("%Y年%m月%d日 ") + weekday_zh[now.weekday()] + now.strftime(" %H点%M分")
+                # 添加日期参考表，帮助本地LLM准确理解相对时间
+                try:
+                    from mcp.tools.time_resolver import build_date_reference
+                    current_time_str += "\n" + build_date_reference(now)
+                except ImportError:
+                    pass
+                augmented_system = SYSTEM_PROMPT + f"\n\n【当前帝国标准时间】：{current_time_str}"
+
+                # 注入对话摘要
+                if conversation_summary:
+                    augmented_system += f"\n\n【历史对话摘要（早期轮次）】\n{conversation_summary}"
+
+                # 检索长期记忆
+                memories = []
+                if memory_manager and memory_manager.enabled:
+                    memories = memory_manager.retrieve_relevant(user_message, k=3)
+                    if memories:
+                        # 按类型分组，构建结构化记忆注入
+                        attributes, events, plans, preferences = [], [], [], []
+                        for mem in memories:
+                            content = mem.get('content', mem) if isinstance(mem, dict) else mem
+                            mem_type = mem.get('type', 'fact') if isinstance(mem, dict) else 'fact'
+                            if mem_type in ('attribute', 'fact'):
+                                attributes.append(content)
+                            elif mem_type == 'event':
+                                events.append(content)
+                            elif mem_type == 'plan':
+                                plans.append(content)
+                            elif mem_type == 'preference':
+                                preferences.append(content)
+                            elif mem_type == 'habit':
+                                attributes.append(content)
+                            elif mem_type == 'opinion':
+                                attributes.append(content)
+                            else:
+                                # 兼容旧格式：按前缀分类
+                                if content.startswith("指挥官属性："):
+                                    attributes.append(content.replace("指挥官属性：", ""))
+                                elif content.startswith("指挥官事件："):
+                                    events.append(content.replace("指挥官事件：", ""))
+                                else:
+                                    attributes.append(content)
+                        parts = []
+                        if attributes:
+                            parts.append("【关于指挥官的已知信息】\n" + "\n".join([f"- {a}" for a in attributes]))
+                        if preferences:
+                            parts.append("【指挥官的偏好】\n" + "\n".join([f"- {p}" for p in preferences]))
+                        if events:
+                            parts.append("【指挥官近期的关键事件】\n" + "\n".join([f"- {e}" for e in events]))
+                        if plans:
+                            parts.append("【指挥官的计划安排】\n" + "\n".join([f"- {p}" for p in plans]))
+                        if parts:
+                            augmented_system += "\n\n" + "\n\n".join(parts)
+
+                with chat_lock:
+                    # 构建最终消息列表（仅角色和内容，不含时间戳）
+                    messages = [{"role": "system", "content": augmented_system}]
+                    for m in chat_history:
+                        messages.append({"role": m["role"], "content": _format_message_for_llm(m)})
+
+                # === 在 daemon 线程中运行 LLM 生成，主线程用超时监控 ===
+                global current_generation_id
+                current_generation_id += 1
+                my_gen_id = current_generation_id
+                gen_result = {"full_response": "", "cancelled": False, "error": None}
+                gen_done = threading.Event()
+
+                def _generation_thread():
+                    try:
+                        output = llm.create_chat_completion(
+                            messages=messages,
+                            stream=True,
+                            temperature=LLM_TEMPERATURE,
+                            max_tokens=LLM_MAX_TOKENS,
+                            repeat_penalty=LLM_REPEAT_PENALTY,
+                            top_p=LLM_TOP_P,
                         )
-                        pending_extraction_pairs.clear()
-                        _save_pending_extraction([])
+                        for token in output:
+                            # 双重检查：取消标记 + 代际 ID（防止旧线程串扰新请求）
+                            if cancel_generation_event.is_set() or current_generation_id != my_gen_id:
+                                if current_generation_id != my_gen_id:
+                                    print(f"[Backend] 旧代际线程 (gen={my_gen_id}) 被新请求取代，丢弃输出", file=sys.stderr)
+                                else:
+                                    print("[Backend] 对话生成已取消", file=sys.stderr)
+                                gen_result["cancelled"] = True
+                                return
+                            delta = token["choices"][0]["delta"]
+                            if "content" in delta:
+                                content = delta["content"]
+                                gen_result["full_response"] += content
+                                send_msg_to_electron({"event": "chat_chunk", "content": content})
+                    except Exception as e:
+                        gen_result["error"] = str(e)
+                    finally:
+                        gen_done.set()
+
+                gen_thread = threading.Thread(target=_generation_thread, daemon=True)
+                gen_thread.start()
+
+                # 等待生成完成，超时则自动取消
+                if not gen_done.wait(timeout=GENERATION_TIMEOUT):
+                    print(f"[Backend] 对话生成超时 ({GENERATION_TIMEOUT}s)，模型可能卡死，自动取消", file=sys.stderr)
+                    cancelled = True
+                    cancel_generation_event.set()
+                    generation_busy.clear()
+                    with state_lock:
+                        transcribe_substate = "idle"
+                    continue
+
+                if gen_result["error"]:
+                    raise Exception(gen_result["error"])
+
+                full_response = gen_result["full_response"]
+                cancelled = gen_result["cancelled"]
+
+                if cancelled:
+                    with chat_lock:
+                        # 从末尾找到刚加的 user 消息并移除（假设它就是最后一条）
+                        if chat_history and chat_history[-1]["role"] == "user":
+                            chat_history.pop()
+                    # 不发送 chat_cancelled，不修改 state（cancel 处理器已处理）
+                    continue
+
+                if full_response:
+                    full_response = _strip_role_prefix(full_response)
+                    if "帝国数据库" in full_response or "我需要查询" in full_response:
+                        print("[Backend] 本地模型触发求救，切换到云端GLM", file=sys.stderr)
+                        # 清除前端已累积的本地模型错误片段，避免前端展示错误的回复
+                        send_msg_to_electron({"event": "chat_chunk_clear"})
+                        full_response = _generate_with_glm(user_message, memories)
+                        # 将云端 GLM 的真正回复发送给前端展示
+                        if full_response:
+                            send_msg_to_electron({"event": "chat_chunk", "content": full_response})
+
+            # ---- 共享后处理：TTS + 记忆提取（强化模式和普通模式均需执行） ----
+            # 先更新状态为 playing_tts，再 put 到 TTS 队列。
+            # 避免 TTS 线程在 transcribe_substate 仍为 "generating" 时
+            # 拿到任务，导致跳过 tts_started 事件 → 前端不显示播报状态。
+            with state_lock:
+                transcribe_substate = "playing_tts"
+            tts_queue.put({"type": "text", "content": full_response})
+            # 每轮对话都累积到缓冲区，触发提取时才批量发送
+            pending_extraction_pairs.extend([
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": full_response}
+            ])
+            _save_pending_extraction(pending_extraction_pairs)
+
+            if memory_manager and memory_manager.enabled and memory_manager.should_extract(user_message):
+                current_ts = chat_history[-1]["timestamp"] / 1000  # 从消息本身读取真实发送时间
+                if pending_extraction_pairs:
+                    memory_manager.add_conversation_to_queue(
+                        list(pending_extraction_pairs),
+                        timestamp=current_ts
+                    )
+                    pending_extraction_pairs.clear()
+                    _save_pending_extraction([])
 
             with chat_lock:
                 chat_history.append({"role": "assistant", "content": full_response, "timestamp": int(time.time() * 1000)})
             save_chat_history()
             send_msg_to_electron({"event": "chat_complete"})
-            with state_lock:
-                transcribe_substate = "playing_tts"
 
         except Exception as e:
             print(f"[Backend] 对话生成错误: {e}", file=sys.stderr)
@@ -1695,6 +1859,13 @@ def main_thread():
                 if mcp_manager and mcp_manager.process(user_content, chat_history):
                     continue
 
+                # == 强化模式：跳过复杂问题预过滤，直接走云端 ==
+                if user_settings.get("enhanced_mode", False):
+                    with state_lock:
+                        transcribe_substate = "generating"
+                    chat_request_queue.put(user_content)
+                    continue
+
                 # == 复杂问题预过滤，直接切换到云端 ==
                 complex_keywords = ["等于", "多少", "为什么", "怎么算", "解释一下", "什么是", "历史上", "哪一年", "怎么回事"]
                 if any(kw in user_content for kw in complex_keywords):
@@ -1728,9 +1899,9 @@ def main_thread():
                         if response:
                             send_msg_to_electron({"event": "chat_chunk", "content": response})
                         send_msg_to_electron({"event": "chat_complete"})
-                        tts_queue.put({"type": "text", "content": response})
                         with state_lock:
                             transcribe_substate = "playing_tts"
+                        tts_queue.put({"type": "text", "content": response})
                     threading.Thread(target=process_glm, daemon=True).start()
                     continue
 
@@ -1883,7 +2054,9 @@ def main_thread():
                 user_settings["forum_search_api_token"] = settings_data.get("forumSearchApiToken", user_settings.get("forum_search_api_token", ""))
                 user_settings["forum_search_base_url"] = settings_data.get("forumSearchBaseUrl", user_settings.get("forum_search_base_url", ""))
                 user_settings["default_city"] = settings_data.get("defaultCity", user_settings.get("default_city", "北京"))
-                print(f"[Backend] 用户设置已更新 (provider={user_settings['cloud_provider']}, model={user_settings['cloud_model']})", file=sys.stderr)
+                if "enhancedMode" in settings_data:
+                    user_settings["enhanced_mode"] = bool(settings_data["enhancedMode"])
+                print(f"[Backend] 用户设置已更新 (provider={user_settings['cloud_provider']}, model={user_settings['cloud_model']}, enhanced={user_settings['enhanced_mode']})", file=sys.stderr)
 
                 # 更新 MCP 天气工具的凭据和默认城市
                 if mcp_manager and "weather" in mcp_manager.tools:
@@ -1923,6 +2096,31 @@ def main_thread():
                 )
                 if cloud_config_changed and mcp_manager is not None:
                     threading.Thread(target=_reinit_cloud_services, daemon=True).start()
+
+                # 处理增强模式切换
+                if "enhancedMode" in settings_data:
+                    new_enhanced = bool(settings_data["enhancedMode"])
+                    old_enhanced = user_settings.get("enhanced_mode", False)
+                    if new_enhanced != old_enhanced:
+                        user_settings["enhanced_mode"] = new_enhanced
+                        if new_enhanced:
+                            # 普通 → 增强：卸载本地模型
+                            print("[Backend] 收到增强模式开启指令，卸载本地模型", file=sys.stderr)
+                            _unload_local_model()
+                            send_msg_to_electron({"event": "settings_updated", "enhanced_mode": True})
+                        else:
+                            # 增强 → 普通：重新加载本地模型
+                            print("[Backend] 收到增强模式关闭指令，重新加载本地模型", file=sys.stderr)
+                            success = _reload_local_model()
+                            send_msg_to_electron({
+                                "event": "settings_updated",
+                                "enhanced_mode": False,
+                                "model_reload_success": success
+                            })
+                            if success:
+                                print("[Backend] 普通模式已恢复，本地模型已重新加载", file=sys.stderr)
+                            else:
+                                print("[Backend] ⚠️ 本地模型重新加载失败！", file=sys.stderr)
 
                 send_msg_to_electron({"event": "settings_updated", "success": True})
 

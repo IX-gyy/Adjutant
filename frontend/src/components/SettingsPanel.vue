@@ -100,6 +100,35 @@
           <span class="form-hint">用于 AI 对话、长期记忆提取和 MCP 工具链智能</span>
         </div>
 
+        <!-- Enhanced Mode -->
+        <div class="settings-section">
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="16" height="16">
+              <path fill="currentColor" d="M13 2l.09.016L17 4l3 2.5L16 10h-.06a3 3 0 0 1-.94 3.94A3 3 0 0 0 13 16h-2c-1.04 0-1.96.53-2.5 1.35A3.94 3.94 0 0 1 5.5 17.5c-.5-.5-.88-1.1-1.1-1.76L7 13.8v-.09a2.99 2.99 0 0 1-.9-2.05A3 3 0 0 0 5 9c0-.88.36-1.68.94-2.26C6.5 6.18 7.5 5.96 8.5 6.5c.4-.87 1.17-1.5 2.08-1.73L11 3h2z"/>
+            </svg>
+            强化模式
+          </h3>
+
+          <div class="enhanced-mode-row">
+            <div class="enhanced-mode-info">
+              <span class="enhanced-mode-label">使用 DeepSeek-flash 替代本地模型</span>
+              <span class="enhanced-mode-status" :class="{ active: enhancedModeChecked }">
+                {{ enhancedModeChecked ? '● 已开启' : '○ 已关闭' }}
+              </span>
+            </div>
+            <a-switch
+              :checked="enhancedModeChecked"
+              :loading="enhancedModeChecking"
+              @change="onEnhancedModeChange"
+            />
+          </div>
+
+          <span class="form-hint" style="margin-top: 8px;">
+            开启后将卸载本地 4B 模型（约释放 3GB 内存），所有对话通过 DeepSeek 云端处理。<br/>
+            <span style="color: var(--terran-warning, #d4a017);">⚠️ 会产生 API 调用费用（DeepSeek 约 ¥1/百万 token）。</span>
+          </span>
+        </div>
+
         <!-- Other API Keys -->
         <div class="settings-section">
           <h3 class="section-title">
@@ -345,7 +374,8 @@ const formData = ref<Settings>({
   qianfanApiKey: '',
   forumSearchApiToken: '',
   forumSearchBaseUrl: 'https://ssemarket.cn',
-  defaultCity: '北京'
+  defaultCity: '北京',
+  enhancedMode: false
 })
 
 // 测试状态
@@ -356,6 +386,10 @@ const testingForumSearch = ref(false)
 
 // Base URL 显示控制
 const showBaseUrl = ref(false)
+
+// 强化模式状态
+const enhancedModeChecked = ref(false)
+const enhancedModeChecking = ref(false)
 
 // 从存储加载数据到表单
 watch(() => props.visible, (newVisible) => {
@@ -377,8 +411,10 @@ watch(() => props.visible, (newVisible) => {
       qianfanApiKey: settings.value.qianfanApiKey,
       forumSearchApiToken: settings.value.forumSearchApiToken,
       forumSearchBaseUrl: settings.value.forumSearchBaseUrl,
-      defaultCity: settings.value.defaultCity
+      defaultCity: settings.value.defaultCity,
+      enhancedMode: settings.value.enhancedMode || false
     }
+    enhancedModeChecked.value = settings.value.enhancedMode || false
     showBaseUrl.value = provider === 'custom'
     testingCloud.value = false
     testingQweather.value = false
@@ -551,6 +587,93 @@ function saveSettings() {
     duration: 3
   })
   closePanel()
+}
+
+// 强化模式切换
+async function onEnhancedModeChange(checked: boolean) {
+  if (!checked) {
+    // 关闭强化模式：直接切换
+    enhancedModeChecked.value = false
+    formData.value.enhancedMode = false
+    notification.info({
+      message: '正在恢复普通模式',
+      description: '正在重新加载本地模型，可能需要几秒钟...',
+      duration: 3
+    })
+    saveSettings()
+    return
+  }
+
+  // 开启强化模式：验证 DeepSeek API Key
+  const keys = formData.value.cloudApiKeys || {}
+  let deepseekKey = keys['deepseek'] || ''
+  if (!deepseekKey && formData.value.cloudProvider === 'deepseek') {
+    deepseekKey = formData.value.cloudApiKey
+  }
+
+  if (!deepseekKey) {
+    notification.warning({
+      message: '请先配置 DeepSeek API Key',
+      description: '强化模式使用 DeepSeek-flash 提供服务，请先在「Cloud LLM 配置」中选择 DeepSeek 并填写 API Key。',
+      duration: 5
+    })
+    enhancedModeChecked.value = false
+    return
+  }
+
+  // 测试 DeepSeek API Key
+  enhancedModeChecking.value = true
+  sendToBackend({
+    action: 'test_cloud_key',
+    provider: 'deepseek',
+    api_key: deepseekKey,
+    model: 'deepseek-v4-flash',
+    base_url: 'https://api.deepseek.com/v1'
+  })
+
+  // 等待测试结果
+  const testResult = await new Promise<{ success: boolean; message: string }>((resolve) => {
+    const unsubscribe = onBackendEvent((event: any) => {
+      if (event.event === 'api_key_test_result' && event.type === 'cloud') {
+        unsubscribe()
+        resolve({ success: event.success, message: event.message || '' })
+      }
+    })
+    // 超时
+    setTimeout(() => {
+      unsubscribe()
+      resolve({ success: false, message: '测试超时，后端无响应' })
+    }, 15000)
+  })
+
+  enhancedModeChecking.value = false
+
+  if (!testResult.success) {
+    notification.error({
+      message: 'DeepSeek API Key 验证失败',
+      description: testResult.message || '请检查 Key 是否正确',
+      duration: 5
+    })
+    enhancedModeChecked.value = false
+    return
+  }
+
+  // Key 验证通过，弹出费用确认
+  Modal.confirm({
+    title: '确认开启强化模式？',
+    icon: h(ExclamationCircleOutlined),
+    content: '强化模式将卸载本地 4B 模型（约释放 3GB 内存），所有对话通过 DeepSeek 云端处理。\n\n⚠️ 这将产生 API 调用费用，由 DeepSeek 按量计费（约 ¥1/百万 token）。\n\n建议在网络稳定的环境下使用。',
+    okText: '确认开启',
+    cancelText: '取消',
+    onOk() {
+      enhancedModeChecked.value = true
+      formData.value.enhancedMode = true
+      saveSettings()
+    },
+    onCancel() {
+      enhancedModeChecked.value = false
+    }
+  })
 }
 
 // 提供商切换：自动填充 baseUrl 和 model，并切换到该提供商的 API Key
@@ -1080,5 +1203,40 @@ function listenTestResult(type: 'cloud' | 'qweather' | 'qianfan' | 'forum_search
 .btn-danger:hover {
   background: #ff4d4f;
   color: #fff;
+}
+
+/* ==================== 强化模式样式 ==================== */
+
+.enhanced-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--terran-spacing-md);
+  background: var(--terran-bg-tertiary);
+  border-radius: var(--terran-radius-md);
+  border: 1px solid var(--terran-border-primary);
+}
+
+.enhanced-mode-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.enhanced-mode-label {
+  font-size: var(--terran-font-size-sm);
+  color: var(--terran-text-primary);
+  font-weight: var(--terran-font-weight-medium);
+}
+
+.enhanced-mode-status {
+  font-size: var(--terran-font-size-xs);
+  color: var(--terran-text-secondary);
+  transition: color 0.3s ease;
+}
+
+.enhanced-mode-status.active {
+  color: #52c41a;
+  font-weight: var(--terran-font-weight-semibold);
 }
 </style>

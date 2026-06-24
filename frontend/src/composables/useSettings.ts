@@ -23,6 +23,8 @@ export interface Settings {
   forumSearchBaseUrl: string
   // Default city
   defaultCity: string
+  // Enhanced mode
+  enhancedMode: boolean
 }
 
 // 提供商预设（模型名使用各 API 要求的准确格式）
@@ -46,7 +48,8 @@ const defaultSettings: Settings = {
   qianfanApiKey: '',
   forumSearchApiToken: '',
   forumSearchBaseUrl: 'https://ssemarket.cn',
-  defaultCity: '北京'
+  defaultCity: '北京',
+  enhancedMode: false
 }
 
 // 本地存储键名
@@ -117,7 +120,8 @@ export function syncSettingsToBackend() {
       qianfanApiKey: settings.value.qianfanApiKey,
       forumSearchApiToken: settings.value.forumSearchApiToken,
       forumSearchBaseUrl: settings.value.forumSearchBaseUrl,
-      defaultCity: settings.value.defaultCity
+      defaultCity: settings.value.defaultCity,
+      enhancedMode: settings.value.enhancedMode
     }
     window.electronAPI.sendToBackend({
       action: 'update_settings',

@@ -554,6 +554,10 @@ export interface UpdateSettingsAction extends BaseFrontendAction {
     forumSearchBaseUrl?: string
     // Default city
     defaultCity?: string
+    // Per-provider API keys
+    cloudApiKeys?: Record<string, string>
+    // Enhanced mode
+    enhancedMode?: boolean
   }
 }
 
