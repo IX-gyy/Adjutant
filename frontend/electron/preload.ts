@@ -6,6 +6,8 @@ export type BackendEvent =
   | { event: 'wake_model_loaded' }
   | { event: 'transcribe_model_loaded' }
   | { event: 'llm_model_loaded' }
+  | { event: 'llm_model_unloaded' }
+  | { event: 'llm_model_loading_started' }
   | { event: 'tts_model_loaded' }
   | { event: 'full_ready' }
   | { event: 'ready' }
@@ -35,7 +37,7 @@ export type BackendEvent =
   // 状态更新事件
   | { event: 'status_update'; current_mode: 'wake' | 'transcribe'; transcribe_substate: 'idle' | 'generating' | 'playing_tts'; tts_busy: boolean; wake_model_loaded: boolean; transcribe_model_loaded: boolean; llm_model_loaded: boolean; tts_model_loaded: boolean; history_count: number; easter_egg_enabled?: boolean; memory_enabled?: boolean }
   // 设置与 API Key 测试
-  | { event: 'settings_updated'; success: boolean; mcp_ready?: boolean }
+  | { event: 'settings_updated'; success: boolean; mcp_ready?: boolean; enhanced_mode?: boolean; model_reloading?: boolean; model_reload_success?: boolean }
   | { event: 'api_key_test_result'; type: 'cloud' | 'glm' | 'qweather' | 'qianfan' | 'forum_search'; success: boolean; message: string }
   // 其他
   | { event: 'chat_chunk_clear' }

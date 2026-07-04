@@ -12,6 +12,8 @@ export const ttsModelLoaded = ref(false)
 export const allModelsLoaded = ref(false)
 export const backendReady = ref(false)
 export const memoryEnabled = ref(false)
+// 增强模式：开启时本地 LLM 已卸载，但对话功能通过云端可用
+export const isEnhancedModeActive = ref(false)
 
 // 全局加载状态（用于页面遮罩）
 export const isLoading = ref(true)
@@ -31,9 +33,11 @@ let statusRetryCount = 0
 
 // 检查是否所有模型都已加载，更新 isLoading
 function checkAllLoaded() {
+  // 增强模式下本地 LLM 无需加载，对话功能通过云端可用
+  const llmReady = llmModelLoaded.value || isEnhancedModeActive.value
   const allLoaded =
     wakeModelLoaded.value && transcribeModelLoaded.value &&
-    llmModelLoaded.value && ttsModelLoaded.value
+    llmReady && ttsModelLoaded.value
 
   allModelsLoaded.value = allLoaded
   if (allLoaded) {
@@ -147,9 +151,41 @@ function handleBackendEvent(event: BackendEvent) {
     case 'llm_model_loaded':
       llmModelLoaded.value = true
       message.success({ content: '对话模型加载完成', duration: 2, key: 'llm_model_loading' })
-      message.loading({ content: '正在加载TTS语音模型...', duration: 0, key: 'tts_model_loading' })
+      // 仅在初始加载时显示 TTS 加载提示，重载时 TTS 已就绪
+      if (!ttsModelLoaded.value) {
+        message.loading({ content: '正在加载TTS语音模型...', duration: 0, key: 'tts_model_loading' })
+      }
       checkAllLoaded()
       break
+
+    case 'llm_model_unloaded':
+      // 增强模式开启：本地模型已卸载，但对话功能仍通过云端可用
+      llmModelLoaded.value = false
+      isEnhancedModeActive.value = true
+      message.info({ content: '本地模型已卸载，切换至云端对话', duration: 2, key: 'llm_model_loading' })
+      checkAllLoaded()
+      break
+
+    case 'llm_model_loading_started':
+      // 切回普通模式：本地模型开始重新加载
+      isEnhancedModeActive.value = false
+      llmModelLoaded.value = false
+      isLoading.value = true
+      message.loading({ content: '正在重新加载本地对话模型...', duration: 0, key: 'llm_model_loading' })
+      break
+
+    case 'settings_updated': {
+      // 处理增强模式切换确认
+      const se = event as any
+      if (se.enhanced_mode === false && se.model_reloading) {
+        // 已切换到普通模式，模型正在后台加载（llm_model_loading_started 已发送）
+        // 状态已由 llm_model_loading_started 设置，这里仅作为确认
+      } else if (se.enhanced_mode === true) {
+        // 已切换到增强模式，设置标志位（模型卸载由 llm_model_unloaded 事件处理）
+        isEnhancedModeActive.value = true
+      }
+      break
+    }
 
     case 'tts_model_loaded':
       ttsModelLoaded.value = true
@@ -194,7 +230,14 @@ function handleBackendEvent(event: BackendEvent) {
 
     case 'error':
       console.error('[useModelStatus] 后端错误:', event)
-      message.error({ content: `加载错误: ${event.msg}`, duration: 3 })
+      if ((event as any).type === 'llm_model_reload_fail') {
+        // 模型重新加载失败：显示持久错误，阻止交互
+        message.destroy('llm_model_loading')
+        message.error({ content: `本地模型重新加载失败！请重启应用或切换回强化模式。错误: ${event.msg}`, duration: 0, key: 'llm_model_load_fail' })
+        // 保持 isLoading = true 阻止交互
+      } else {
+        message.error({ content: `加载错误: ${event.msg}`, duration: 3 })
+      }
       break
   }
 }
@@ -292,5 +335,6 @@ export function useModelStatus() {
     isModelLoaded,
     getLoadingStatus,
     resetModelStatus,
+    isEnhancedModeActive,
   }
 }

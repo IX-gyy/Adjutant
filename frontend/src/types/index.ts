@@ -583,6 +583,10 @@ export interface WeatherResultEvent extends BaseBackendEvent {
 export interface SettingsUpdatedEvent extends BaseBackendEvent {
   event: 'settings_updated'
   success: boolean
+  enhanced_mode?: boolean
+  model_reloading?: boolean
+  model_reload_success?: boolean
+  mcp_ready?: boolean
 }
 
 /**

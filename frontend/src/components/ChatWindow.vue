@@ -45,7 +45,7 @@
 
     <InputArea
       v-model="inputText"
-      :disabled="!isTranscribeReady || isGenerating"
+      :disabled="!isTranscribeReady || isGenerating || (!isLlmReady && !isEnhancedModeActive)"
       :is-recording="isRecording"
       :recording-duration="recordingDuration"
       :audio-level="audioLevel"
@@ -78,7 +78,7 @@ import { useTTS, isTtsPlaying, stopTts } from '../composables/useTTS'
 import { useSettings, checkSettings } from '../composables/useSettings'
 import { notification } from 'ant-design-vue'
 
-const { isWakeReady, isTranscribeReady, isLlmReady, isTtsReady, isLoading } = useModelStatus()  // 🆕 解构 isLoading
+const { isWakeReady, isTranscribeReady, isLlmReady, isTtsReady, isLoading, isEnhancedModeActive } = useModelStatus()
 
 useBackend()
 useChat()

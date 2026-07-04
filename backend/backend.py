@@ -252,30 +252,47 @@ def _unload_local_model():
         llm = None
         gc.collect()
         print("[Backend] 本地模型已卸载，内存已回收", file=sys.stderr)
+        send_msg_to_electron({"event": "llm_model_unloaded"})
 
 
 def _reload_local_model():
-    """重新加载本地 LLM 模型（从强化模式切回普通模式时调用）"""
+    """重新加载本地 LLM 模型（从强化模式切回普通模式时调用）。
+    在 daemon 线程中执行，不阻塞主消息循环。"""
     global llm
     if llm is not None:
         print("[Backend] 本地模型已在内存中，无需重新加载", file=sys.stderr)
-        return True
+        send_msg_to_electron({"event": "llm_model_loaded"})
+        return
 
-    print("[Backend] 正在重新加载本地模型...", file=sys.stderr)
-    try:
-        llm = Llama(
-            model_path=LLM_MODEL_PATH,
-            n_ctx=LLM_N_CTX,
-            n_threads=LLM_N_THREADS,
-            n_batch=LLM_N_BATCH,
-            verbose=False,
-            chat_format=LLM_CHAT_FORMAT
-        )
-        print("[Backend] 本地模型重新加载完成", file=sys.stderr)
-        return True
-    except Exception as e:
-        print(f"[Backend] 本地模型重新加载失败: {e}", file=sys.stderr)
-        return False
+    print("[Backend] 正在重新加载本地模型（后台线程）...", file=sys.stderr)
+    # 立即通知前端：模型开始加载
+    send_msg_to_electron({"event": "llm_model_loading_started"})
+
+    def _load():
+        global llm
+        try:
+            sys.stderr.flush()
+            sys.stdout.buffer.flush()
+            loaded = Llama(
+                model_path=LLM_MODEL_PATH,
+                n_ctx=LLM_N_CTX,
+                n_threads=LLM_N_THREADS,
+                n_batch=LLM_N_BATCH,
+                verbose=False,
+                chat_format=LLM_CHAT_FORMAT
+            )
+            llm = loaded
+            print("[Backend] 本地模型重新加载完成", file=sys.stderr)
+            send_msg_to_electron({"event": "llm_model_loaded"})
+        except Exception as e:
+            print(f"[Backend] 本地模型重新加载失败: {e}", file=sys.stderr)
+            send_msg_to_electron({
+                "event": "error",
+                "type": "llm_model_reload_fail",
+                "msg": f"本地模型重新加载失败: {e}"
+            })
+
+    threading.Thread(target=_load, daemon=True).start()
 
 # ================= 工具函数 =================
 def fuzzy_match_wake_word(text):
@@ -1560,6 +1577,21 @@ def chat_inference_thread():
                     continue  # 走 finally 清理 generation_busy，回到循环等待下一条消息
 
             else:
+                # 如果 llm 尚未加载（例如正在从强化模式切回），等待或报错
+                if llm is None:
+                    print("[Backend] 本地模型尚未就绪，等待加载完成...", file=sys.stderr)
+                    waited = 0
+                    while llm is None and waited < 60:
+                        time.sleep(1)
+                        waited += 1
+                    if llm is None:
+                        send_msg_to_electron({
+                            "event": "error",
+                            "msg": "本地模型尚未加载完成，请稍后再试"
+                        })
+                        generation_busy.clear()
+                        continue
+                    print(f"[Backend] 本地模型就绪（等待了 {waited}s）", file=sys.stderr)
                 with chat_lock:
                     chat_history.append({"role": "user", "content": user_message, "timestamp": int(time.time() * 1000)})
                     truncate_chat_history()
@@ -1850,6 +1882,7 @@ def main_thread():
                         "display_text": egg_rule["display_text"],
                         "audio_file": egg_rule["audio_file"]
                     })
+                    cancel_tts_event.clear()  # 清除取消标志，确保 TTS 线程处理彩蛋音频
                     tts_queue.put({"type": "text", "content": egg_rule["transition_text"]})
                     tts_queue.put({"type": "audio", "file": egg_rule["audio_file"]})
                     continue
@@ -1933,6 +1966,7 @@ def main_thread():
                     tts_busy = False
                     tts_session_active = False
                     transcribe_substate = "idle"  # 始终重置，不再依赖 worker 线程
+                cancel_tts_event.clear()  # 取消已完成，清除标志以允许后续 TTS 任务
                 send_msg_to_electron({"event": "chat_cancelled"})
                 send_msg_to_electron({"event": "tts_stopped"})
 
@@ -2054,8 +2088,8 @@ def main_thread():
                 user_settings["forum_search_api_token"] = settings_data.get("forumSearchApiToken", user_settings.get("forum_search_api_token", ""))
                 user_settings["forum_search_base_url"] = settings_data.get("forumSearchBaseUrl", user_settings.get("forum_search_base_url", ""))
                 user_settings["default_city"] = settings_data.get("defaultCity", user_settings.get("default_city", "北京"))
-                if "enhancedMode" in settings_data:
-                    user_settings["enhanced_mode"] = bool(settings_data["enhancedMode"])
+                # enhancedMode 的设置推迟到下面的「处理增强模式切换」块中处理，
+                # 不要在这里提前赋值，否则变更检测会失效。
                 print(f"[Backend] 用户设置已更新 (provider={user_settings['cloud_provider']}, model={user_settings['cloud_model']}, enhanced={user_settings['enhanced_mode']})", file=sys.stderr)
 
                 # 更新 MCP 天气工具的凭据和默认城市
@@ -2104,25 +2138,34 @@ def main_thread():
                     if new_enhanced != old_enhanced:
                         user_settings["enhanced_mode"] = new_enhanced
                         if new_enhanced:
-                            # 普通 → 增强：卸载本地模型
+                            # 普通 → 增强：卸载本地模型（同步，速度很快）
                             print("[Backend] 收到增强模式开启指令，卸载本地模型", file=sys.stderr)
                             _unload_local_model()
-                            send_msg_to_electron({"event": "settings_updated", "enhanced_mode": True})
-                        else:
-                            # 增强 → 普通：重新加载本地模型
-                            print("[Backend] 收到增强模式关闭指令，重新加载本地模型", file=sys.stderr)
-                            success = _reload_local_model()
                             send_msg_to_electron({
                                 "event": "settings_updated",
-                                "enhanced_mode": False,
-                                "model_reload_success": success
+                                "success": True,
+                                "enhanced_mode": True
                             })
-                            if success:
-                                print("[Backend] 普通模式已恢复，本地模型已重新加载", file=sys.stderr)
-                            else:
-                                print("[Backend] ⚠️ 本地模型重新加载失败！", file=sys.stderr)
-
-                send_msg_to_electron({"event": "settings_updated", "success": True})
+                        else:
+                            # 增强 → 普通：异步重新加载本地模型
+                            print("[Backend] 收到增强模式关闭指令，开始异步重新加载本地模型", file=sys.stderr)
+                            _reload_local_model()
+                            # 立即回复前端：已收到切换指令，模型正在后台加载
+                            send_msg_to_electron({
+                                "event": "settings_updated",
+                                "success": True,
+                                "enhanced_mode": False,
+                                "model_reloading": True
+                            })
+                    else:
+                        # 增强模式未变化，但需要发送确认
+                        send_msg_to_electron({
+                            "event": "settings_updated",
+                            "success": True,
+                            "enhanced_mode": new_enhanced
+                        })
+                else:
+                    send_msg_to_electron({"event": "settings_updated", "success": True})
 
             elif action == "test_cloud_key":
                 # 测试云端模型 API Key 是否有效
